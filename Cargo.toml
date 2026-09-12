@@ -1,0 +1,75 @@
+[package]
+name = "mikrotik-rif"
+description = "MikroTik RIF Viewer — offline reader for RouterOS supout captures"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "mikrotik-rif"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1.1"
+thiserror = "2.0"
+eframe = "0.36"
+egui = "0.36"
+rfd = "0.17"
+fluent-bundle = "0.16"
+unic-langid = "0.9"
+sys-locale = "0.3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Product names such as MikroTik and RouterOS appear throughout the docs.
+doc_markdown = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Packaging (cargo-packager): installers and app bundles for every platform.
+# The concrete formats are chosen per job in .github/workflows/release.yml.
+# ─────────────────────────────────────────────────────────────────────────────
+[package.metadata.packager]
+product-name = "MikroTik RIF Viewer"
+identifier = "io.github.balakar94.mikrotik-rif"
+out-dir = "dist"
+# macOS uses the .icns, Windows the .ico. Linux installs every .png into
+# /usr/share/icons/hicolor/<W>x<H>/apps/, so a standard 512 px copy is shipped
+# alongside the 1024 px master (hicolor's index has no 1024 directory).
+icons = [
+    "assets/icon/icon.png",
+    "assets/icon/icon.icns",
+    "assets/icon/icon.ico",
+    "assets/linux/mikrotik-rif-512.png",
+]
+license-file = "LICENSE"
+
+# Shared by the .deb and AppImage. The template has no Handlebars placeholders,
+# so it renders to itself and stays in sync with the .rpm entry below.
+[package.metadata.packager.deb]
+desktop-template = "assets/linux/mikrotik-rif.desktop"
+
+# RPM is the one format cargo-packager does not cover, so cargo-generate-rpm
+# reads this table and turns the already-built binary into a package. The
+# desktop entry and icon are installed by hand because cargo-generate-rpm knows
+# nothing about freedesktop integration.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/mikrotik-rif", dest = "/usr/bin/mikrotik-rif", mode = "755" },
+    { source = "assets/linux/mikrotik-rif.desktop", dest = "/usr/share/applications/mikrotik-rif.desktop", mode = "644" },
+    { source = "assets/linux/mikrotik-rif-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mikrotik-rif.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/mikrotik-rif/LICENSE", mode = "644" },
+]

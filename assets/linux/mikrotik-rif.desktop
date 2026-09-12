@@ -1,0 +1,23 @@
+# MikroTik RIF Viewer — freedesktop application entry.
+#
+# This single file is shared by every Linux package:
+#   * .deb / AppImage: cargo-packager uses it as the desktop template
+#     (`[package.metadata.packager.deb] desktop-template`). It is deliberately
+#     written without Handlebars placeholders, so it renders to itself.
+#   * .rpm: cargo-generate-rpm installs it verbatim to
+#     /usr/share/applications/mikrotik-rif.desktop.
+#
+# Icon= matches the icon name installed under
+# /usr/share/icons/hicolor/512x512/apps/mikrotik-rif.png.
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=MikroTik RIF Viewer
+GenericName=RouterOS capture viewer
+Comment=Open and read MikroTik RouterOS support captures (supout.rif)
+Exec=mikrotik-rif %F
+Icon=mikrotik-rif
+Terminal=false
+Categories=Utility;Network;
+Keywords=RouterOS;MikroTik;supout;rif;router;capture;
+StartupNotify=true

@@ -1,0 +1,224 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Required by softprops/action-gh-release to create/update the GitHub Release.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: package (${{ matrix.os }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform/architecture failing must not cancel the others; partial
+      # artifacts are still useful for diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64 (existing)
+          - os: windows-latest
+            arch: x64
+            formats: "wix,nsis"
+            artifact: release-windows-x64
+            files: |
+              dist/*.msi
+              dist/*.exe
+          - os: macos-latest
+            arch: arm64
+            formats: "app,dmg"
+            artifact: release-macos-arm64
+            files: |
+              dist/*.dmg
+              dist/*.app.zip
+          - os: ubuntu-latest
+            arch: x64
+            formats: "deb,appimage"
+            artifact: release-linux-x64
+            files: |
+              dist/*.deb
+              dist/*.AppImage
+              dist/*.rpm
+          # arm64 (new). Native arm64 standard GitHub-hosted runners are GA
+          # and available in private repositories (GitHub changelog
+          # 2026-01-29; docs.github.com "GitHub-hosted runners reference").
+          - os: windows-11-arm
+            arch: arm64
+            formats: "wix,nsis"
+            artifact: release-windows-arm64
+            files: |
+              dist/*.msi
+              dist/*.exe
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            formats: "deb,appimage"
+            artifact: release-linux-arm64
+            files: |
+              dist/*.deb
+              dist/*.AppImage
+              dist/*.rpm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # eframe 0.36 builds winit (x11 + wayland) and wgpu (Vulkan) on Linux.
+      # rfd 0.17.2 defaults to xdg-portal + wayland, so GTK3 is not needed;
+      # Cargo.lock has no openssl-sys, so libssl-dev is not needed either.
+      # The same package set exists for arm64 on Ubuntu 24.04 (and the arm64
+      # image ships patchelf 0.18.0, which linuxdeploy uses for AppImage).
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libvulkan-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # cargo-packager does NOT compile the application itself (verified in
+      # its README: "By default, the packager doesn't build your application").
+      # It detects the host target automatically, so each native runner builds
+      # and packages its own architecture. Build the release profile exactly
+      # once here; every packager step below consumes these artifacts via
+      # `cargo packager --release`.
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      # Package names embed the target architecture, so the x64 and arm64
+      # artifacts never collide:
+      #   MSI  mikrotik-rif_<version>_x64_<lang>.msi / _arm64_<lang>.msi
+      #   NSIS mikrotik-rif_<version>_x64-setup.exe / _arm64-setup.exe
+      #   DEB  mikrotik-rif_<version>_amd64.deb / _arm64.deb
+      #   AppImage mikrotik-rif_<version>_x86_64.AppImage / _aarch64.AppImage
+      - name: Package installers (cargo-packager)
+        run: cargo packager --release --formats ${{ matrix.formats }}
+
+      # RPM is intentionally not part of cargo-packager (its PackageFormat enum
+      # only has App/Dmg/Wix/Nsis/Deb/AppImage/Pacman). cargo-generate-rpm
+      # consumes the [package.metadata.generate-rpm] table in Cargo.toml; it
+      # names the file with the host arch (x86_64 / aarch64), so no collision.
+      - name: Install cargo-generate-rpm
+        if: runner.os == 'Linux'
+        run: cargo install cargo-generate-rpm --locked --version 0.21.0
+
+      - name: Generate .rpm package (cargo-generate-rpm)
+        if: runner.os == 'Linux'
+        run: cargo generate-rpm --output dist
+
+      # A zipped .app preserves symlinks/permissions and is what GitHub Release
+      # consumers expect (softprops/action-gh-release cannot upload a directory).
+      - name: Bundle macOS .app into a zip
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find dist -maxdepth 1 -name '*.app' -print -quit)"
+          if [ -z "${app}" ]; then
+            echo "No .app bundle found in dist/" >&2
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "${app}" "dist/MikroTik-RIF-Viewer.app.zip"
+
+      - name: Show packaged files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lR dist
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish GitHub Release
+    needs: build
+    # Only a version tag publishes; workflow_dispatch keeps artifacts only.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            Unsigned build: no Apple or Windows code-signing certificates are used.
+
+            ### macOS — Gatekeeper
+            The app is not notarized, so macOS may block the first launch.
+            Drag the app to `/Applications`, then either:
+
+            - right-click (or Control-click) the app, choose **Open**, and confirm
+              **Open** again, or
+            - clear the quarantine attribute in a terminal:
+
+              ```bash
+              xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"
+              ```
+
+            ### Windows — SmartScreen
+            Installers are provided for x64 and arm64; the architecture is part of
+            the file name (`..._x64...` or `..._arm64...`). The installers are not
+            code-signed. If you see "Windows protected your PC", click
+            **More info**, then **Run anyway**.
+
+            ### Linux
+            Both x86_64 and arm64 packages are provided; the architecture is part
+            of the file name.
+
+            - Debian/Ubuntu: `sudo apt install ./mikrotik-rif_*_amd64.deb`
+              (x86_64) or `./mikrotik-rif_*_arm64.deb` (arm64)
+            - AppImage: `chmod +x mikrotik-rif_*_x86_64.AppImage && ./mikrotik-rif_*_x86_64.AppImage`
+              (x86_64) or `mikrotik-rif_*_aarch64.AppImage` (arm64)
+            - Fedora/RHEL: `sudo dnf install ./mikrotik-rif-*.x86_64.rpm`
+              (x86_64) or `./mikrotik-rif-*.aarch64.rpm` (arm64)
+          files: |
+            dist/*
+            LICENSE
+            assets/fonts/OFL-NotoSansSC.txt
