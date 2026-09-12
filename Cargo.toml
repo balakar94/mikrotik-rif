@@ -40,7 +40,7 @@ strip = "symbols"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Packaging (cargo-packager): installers and app bundles for every platform.
-# The concrete formats are chosen per job in .github/workflows/release.yml.
+# The concrete formats are chosen per job in .github/workflows/build.yml.
 # ─────────────────────────────────────────────────────────────────────────────
 [package.metadata.packager]
 product-name = "MikroTik RIF Viewer"
@@ -62,6 +62,23 @@ license-file = "LICENSE"
 [package.metadata.packager.deb]
 desktop-template = "assets/linux/mikrotik-rif.desktop"
 
+# The SIL OFL (1.1) requires the copyright notice and the licence text to
+# accompany every distributed copy of a font, so the texts travel inside the
+# package instead of only living in the source tree. cargo-packager strips the
+# leading "/" of the destination and places the file at that path inside the
+# package, so "/usr/share/..." lands in the data archive under usr/share/...
+[package.metadata.packager.deb.files]
+"assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
+"assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
+"assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
+
+# AppImage reuses the .deb file-copying routine, so the same map is repeated for
+# the same destination inside the AppDir.
+[package.metadata.packager.appimage.files]
+"assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
+"assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
+"assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
+
 # RPM is the one format cargo-packager does not cover, so cargo-generate-rpm
 # reads this table and turns the already-built binary into a package. The
 # desktop entry and icon are installed by hand because cargo-generate-rpm knows
@@ -72,4 +89,7 @@ assets = [
     { source = "assets/linux/mikrotik-rif.desktop", dest = "/usr/share/applications/mikrotik-rif.desktop", mode = "644" },
     { source = "assets/linux/mikrotik-rif-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mikrotik-rif.png", mode = "644" },
     { source = "LICENSE", dest = "/usr/share/licenses/mikrotik-rif/LICENSE", mode = "644" },
+    { source = "assets/fonts/OFL-Inter.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt", mode = "644" },
+    { source = "assets/fonts/OFL-JetBrainsMono.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt", mode = "644" },
+    { source = "assets/fonts/OFL-NotoSansSC.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt", mode = "644" },
 ]

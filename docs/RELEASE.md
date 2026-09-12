@@ -5,12 +5,42 @@ Actions. The workflows live in `.github/workflows/`.
 
 ## Workflows
 
+There are three workflows. `build.yml` owns the packaging matrix; `release.yml`
+only orchestrates it; `ci.yml` is pure test.
+
 | Workflow | File | Trigger | Purpose |
 | --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | Format, lint and test on Linux, macOS and Windows. |
-| Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Build native installers and, for tags, publish a GitHub Release. |
+| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | Format, lint and test on Linux, macOS and Windows. It does not build release binaries, package anything, or upload artifacts. |
+| Build | `.github/workflows/build.yml` | `workflow_dispatch`, `workflow_call` | Build and package the native installers for all five runner/architecture combinations and upload them as workflow artifacts. It never publishes a release. |
+| Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Orchestration only: it calls `build.yml` (job `build`), then — for `v*` tags and only then — downloads the artifacts, computes checksums and publishes a GitHub Release. |
 
-CI installs the Linux development packages eframe/winit/wgpu need. The release
+### Which workflow runs when
+
+- **Push to `main` / pull request** → `ci.yml` only.
+- **Manual `workflow_dispatch` of `build.yml`** → packages every platform and
+  uploads the artifacts to that run. Nothing is published.
+- **Manual `workflow_dispatch` of `release.yml`** → calls `build.yml`, uploads
+  the same artifacts, and skips the `release` job because `github.ref` is a
+  branch, not a `v*` tag.
+- **Push of a `v*` tag** → `release.yml` calls `build.yml`, then the `release`
+  job runs and publishes the GitHub Release.
+
+**Only a `v*` tag publishes a release.** The `release` job is gated on
+`startsWith(github.ref, 'refs/tags/v')`; every other entry point stops after
+uploading artifacts.
+
+`release.yml` calls `build.yml` with `uses: ./.github/workflows/build.yml`. A
+reusable workflow invoked via `workflow_call` runs inside the caller's workflow
+run (the jobs share `github.run_id`), so the artifacts uploaded by `build.yml`
+belong to the caller's run and the `release` job fetches them with
+`actions/download-artifact`, whose default `run-id` is `${{ github.run_id }}`.
+This is the standard way to share build artifacts across a `workflow_call`
+boundary; no extra inputs or `run-id` overrides are needed. Permissions can only
+be maintained or reduced across a reusable-workflow call, so `release.yml`
+grants `contents: write` at the workflow level but caps the `build` call at
+`contents: read`.
+
+CI installs the Linux development packages eframe/winit/wgpu need. The build
 workflow builds the application once per runner (`cargo build --release --locked`)
 and lets cargo-packager consume that binary; it does **not** compile the app
 again. Each architecture is built on its own **native** arm64/x64 runner (no
@@ -56,6 +86,30 @@ appears in the application menu with its own icon:
 Modern Fedora/RHEL run `update-desktop-database` and `gtk-update-icon-cache`
 through RPM file triggers, so no scriptlets are needed.
 
+## Licence files in the packages
+
+The application is MIT, but the three fonts it embeds are under the SIL Open
+Font License 1.1, whose condition 2 requires the copyright notice and the
+licence text to accompany every distributed copy of the font — including the
+copies inside a compiled binary. `icons`, `desktop-template` and the release
+attachments alone do not satisfy that, so:
+
+- the repository carries one OFL text per bundled font
+  (`assets/fonts/OFL-Inter.txt`, `OFL-JetBrainsMono.txt`, `OFL-NotoSansSC.txt`);
+- `.deb` and `.AppImage` install all three plus `LICENSE` under
+  `/usr/share/licenses/mikrotik-rif/`, through the `deb.files` and
+  `appimage.files` maps in `Cargo.toml` (cargo-packager strips a leading `/`
+  from the destination and copies the file to that path inside the package);
+- `.rpm` does the same through the `[package.metadata.generate-rpm]` assets;
+- every GitHub Release attaches the four texts.
+
+Still outstanding for full third-party compliance: the notices of the Rust
+dependencies (428 crates in `Cargo.lock`) and of egui's own default fonts
+(Hack, Noto Emoji, Ubuntu Light, emoji-icon-font), which remain in the binary
+because `FontDefinitions::default()` is used as the base. Windows and macOS
+bundles currently carry only the MIT text.
+
+
 ## Verified prerequisites and their sources
 
 These were verified against current upstream sources in September 2026.
@@ -90,12 +144,15 @@ the official CLI directly.
    git tag -a v0.1.0 -m "v0.1.0"
    git push origin v0.1.0
    ```
-4. The Release workflow builds all installers, computes `SHA256SUMS.txt`, and
-   creates the GitHub Release with `generate_release_notes: true`.
+4. The Release workflow calls `build.yml`, computes `SHA256SUMS.txt` from the
+   merged artifacts, and creates the GitHub Release with
+   `generate_release_notes: true`.
 
-To build installers without publishing (dry run), run the Release workflow
-manually via `workflow_dispatch`. Artifacts are uploaded, but the `release` job
-is skipped.
+To build installers without publishing (dry run), run the **Build** workflow
+directly via `workflow_dispatch`; the installers are uploaded as artifacts on
+that run page. Running **Release** manually via `workflow_dispatch` also builds
+them (through the reusable call) but skips the `release` job, since the ref is
+not a `v*` tag.
 
 ## Verification
 
@@ -131,9 +188,12 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
 - A bad release: delete the GitHub Release/tag, fix the issue, and push a new
   tag. Tags are immutable references, so do not force-push an existing tag.
 - A bad CI change: revert the commit under `.github/workflows/`; the workflows
-  are the only CI state and contain no secrets.
+  are the only CI state and contain no secrets. `build.yml` is the single
+  packaging definition, so a packaging regression is fixed in one place.
 - Artifacts are retained for 7 days, so re-running a failed matrix job is
-  possible while the run is available.
+  possible while the run is available. A `workflow_call` run uploads artifacts
+  to the caller's run, so a manual `release.yml` dispatch also retains them for
+  7 days.
 
 ## Residual uncertainty (only provable on a real run)
 
@@ -155,3 +215,9 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   workflow.
 - macOS `.app`/`.dmg` Gatekeeper behavior is only observable on a real macOS
   client.
+- Reusable-workflow artifact sharing: `build.yml` runs as part of the caller's
+  run, so `actions/download-artifact` in `release.yml` is expected to see all
+  five artifacts via its default `run-id`. This has not been exercised on a real
+  run here; if the artifacts were ever not visible, the fallback is to add an
+  explicit `run-id: ${{ github.run_id }}`, which is the same value the action
+  already defaults to for a same-repo `workflow_call`.

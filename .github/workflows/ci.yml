@@ -22,7 +22,7 @@ env:
 
 jobs:
   test:
-    name: build & test (${{ matrix.os }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       # A failure on one OS must not hide failures on the others.

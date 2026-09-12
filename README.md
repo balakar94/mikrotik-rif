@@ -224,8 +224,10 @@ The interface bundles three fonts, all under the
 
 egui does not use system fonts, so every glyph the interface can show has to be
 bundled. Inter covers Latin and Cyrillic; anything else falls through to Noto.
-The Noto license text ships next to the binary at
-`assets/fonts/OFL-NotoSansSC.txt`.
+Each bundled font keeps its OFL text next to it in the source tree
+(`assets/fonts/OFL-Inter.txt`, `OFL-JetBrainsMono.txt`, `OFL-NotoSansSC.txt`).
+The Linux packages also install all three under
+`/usr/share/licenses/mikrotik-rif/`, and every GitHub Release attaches them.
 
 Because the fonts are embedded, the release binary is around 19 MB, most of it
 the CJK font.
