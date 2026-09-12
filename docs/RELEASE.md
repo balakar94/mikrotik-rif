@@ -51,7 +51,7 @@ cross-compilation).
 | Runner | Architecture | Tool | Formats (arch appears in the file name) |
 | --- | --- | --- | --- |
 | `windows-latest` | x64 | cargo-packager | WiX `.msi`, NSIS `-setup.exe` (`..._x64...`) |
-| `windows-11-arm` | arm64 | cargo-packager | WiX `.msi`, NSIS `-setup.exe` (`..._arm64...`) |
+| `windows-11-arm` | arm64 | cargo-packager | NSIS `-setup.exe` (`..._arm64...`) only; no MSI (see the WiX note below) |
 | `macos-latest` | arm64 (Apple Silicon) | cargo-packager | `.app` bundle, `.dmg`; the `.app` is additionally zipped as `MikroTik-RIF-Viewer.app.zip` |
 | `ubuntu-latest` | x64 | cargo-packager | `.deb` (`amd64`), `.AppImage` (`x86_64`) |
 | `ubuntu-24.04-arm` | arm64 | cargo-packager | `.deb` (`arm64`), `.AppImage` (`aarch64`) |
@@ -101,13 +101,17 @@ attachments alone do not satisfy that, so:
   `appimage.files` maps in `Cargo.toml` (cargo-packager strips a leading `/`
   from the destination and copies the file to that path inside the package);
 - `.rpm` does the same through the `[package.metadata.generate-rpm]` assets;
+- macOS and Windows have no such file map, so the same four texts travel
+  through the top-level `resources` list: cargo-packager copies them into
+  `Contents/Resources` in the `.app` (and therefore the `.dmg`) and next to the
+  executable on Windows. On `.deb` this also duplicates them under
+  `usr/lib/<binary>/licenses/`, which is harmless;
 - every GitHub Release attaches the four texts.
 
 Still outstanding for full third-party compliance: the notices of the Rust
 dependencies (428 crates in `Cargo.lock`) and of egui's own default fonts
 (Hack, Noto Emoji, Ubuntu Light, emoji-icon-font), which remain in the binary
-because `FontDefinitions::default()` is used as the base. Windows and macOS
-bundles currently carry only the MIT text.
+because `FontDefinitions::default()` is used as the base.
 
 
 ## Verified prerequisites and their sources
@@ -124,7 +128,7 @@ These were verified against current upstream sources in September 2026.
 | RPM | cargo-packager has no RPM format (enum: `App`, `Dmg`, `Wix`, `Nsis`, `Deb`, `AppImage`, `Pacman`). `cargo-generate-rpm` (current `0.21.0`) is used instead. It does **not** build the binary; run it after `cargo build --release`. | `crates/utils/src/lib.rs`; cargo-generate-rpm 0.21.0 README |
 | RPM metadata requirement | `cargo-generate-rpm` 0.21.0 requires a `[package.metadata.generate-rpm]` table with `assets` (`Config::new_from_manifest` returns `ConfigError::Missing("package.metadata.generate-rpm")` otherwise). The table lives in `Cargo.toml`, so the workflow only runs `cargo generate-rpm --output dist`. | `src/config/metadata.rs` (crate 0.21.0) |
 | arm64 runner availability | `ubuntu-24.04-arm`, `ubuntu-22.04-arm` and `windows-11-arm` are **general availability** standard GitHub-hosted runners and are usable in **private** repositories (2 vCPU private / 4 vCPU public; usage counts towards plan minutes). They are also listed in the official runner reference alongside the x64 labels. | GitHub Changelog 2026-01-29 "arm64 standard runners are now available in private repositories"; GitHub Changelog 2026-08-20 "Linux and Windows arm64 standard hosted runners are now supported in all repositories"; docs.github.com "GitHub-hosted runners reference" |
-| arm64 runner images | `Ubuntu 24.04` arm64 ships `patchelf` 0.18.0, `dpkg`/`dpkg-dev` and Rust 1.98.1. `Windows 11` arm64 ships **NSIS 3.10** (WiX is not listed) and Rust 1.98.1; Windows 11 arm64 emulates x86/x64, which is what cargo-packager's downloaded WiX 3.11.2 and NSIS 3.09 toolchains need. | `actions/runner-images` `Ubuntu2404-Arm64-Readme.md`, `Windows11-Arm64-Readme.md` |
+| arm64 runner images | `Ubuntu 24.04` arm64 ships `patchelf` 0.18.0, `dpkg`/`dpkg-dev` and Rust 1.98.1. `Windows 11` arm64 ships **NSIS 3.10** (WiX is not listed) and Rust 1.98.1, and emulates x86/x64. Emulation is enough for NSIS 3.09 (native Win32) but **not** for WiX 3.11.2's `candle.exe`, which failed in the v0.1.0 run, so arm64 uses NSIS only. | `actions/runner-images` `Ubuntu2404-Arm64-Readme.md`, `Windows11-Arm64-Readme.md`; observed CI run 34709776279 |
 | arm64 AppImage tooling | cargo-packager resolves the host arch and downloads `linuxdeploy-aarch64.AppImage`, `AppRun-aarch64` and `linuxdeploy-plugin-appimage-aarch64.AppImage`; all three assets exist upstream, so the arm64 AppImage build does not depend on FUSE or a system `linuxdeploy`. | cargo-packager 0.11.8 `src/package/appimage/mod.rs`; upstream release assets in `tauri-apps/binary-releases` (tags `linuxdeploy`, `apprun-old`) and `linuxdeploy/linuxdeploy-plugin-appimage` (tag `continuous`) |
 | Windows arm64: native, not cross-compilation | The workflow uses the native `windows-11-arm` runner. For reference, `cargo packager --target <triple>` is supported (the CLI `--target` sets `Config::target_triple`, and the default binary directory becomes `target/<triple>/release`), but cargo-packager never builds: a non-HOST target would require a prior `cargo build --target aarch64-pc-windows-msvc` with the arm64 MSVC toolchain (or `cargo-xwin`). Native packaging avoids that entirely. | cargo-packager 0.11.8 `src/cli/mod.rs`, `src/config/mod.rs`, `src/cli/config.rs`; README ("the packager doesn't build your application") |
 | Linux arm64: native required | Cross-compiling eframe/wgpu from an x86_64 runner is impractical because the dependency graph links native X11/Wayland, Vulkan and winit/rfd code; the native `ubuntu-24.04-arm` runner is used instead. | engineering assessment based on `Cargo.lock` (wayland/x11/vulkan/ash, `xkbcommon-dl`) and the eframe Linux build requirements |
@@ -200,11 +204,11 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
 - cargo-packager's WiX/NSIS/linuxdeploy downloads depend on third-party GitHub
   release assets that are pinned by hash in cargo-packager but could be
   unavailable or rate-limited.
-- Windows arm64 is the main unknown: cargo-packager downloads **x86** WiX and
-  NSIS toolchains and runs them under Windows 11 arm64 emulation. This should
-  work (the image also ships NSIS 3.10, and x86 emulation is supported), but
-  the `.msi`/`-setup.exe` builds on `windows-11-arm` are only proven on a real
-  run.
+- Windows arm64: **observed failure**. cargo-packager's WiX 3.11.2
+  `candle.exe` is an x86 .NET Framework 3.5 tool and dies on
+  `windows-11-arm` with `Error running candle.exe` (exit 1), which skipped the
+  publish job for v0.1.0. The arm64 job now packages with NSIS only (a native
+  Win32 tool); the x64 job keeps WiX.
 - AppImage packaging requires the app icon to be square; `assets/icon/icon.png`
   is assumed square. The arm64 build additionally depends on the upstream
   `linuxdeploy-aarch64`/`AppRun-aarch64` assets remaining available.

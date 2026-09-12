@@ -61,13 +61,18 @@ jobs:
           # arm64 (new). Native arm64 standard GitHub-hosted runners are GA
           # and available in private repositories (GitHub changelog
           # 2026-01-29; docs.github.com "GitHub-hosted runners reference").
+          #
+          # NSIS only, no WiX. cargo-packager's WiX 3.11.2 `candle.exe` is an
+          # x86 .NET Framework 3.5 tool and dies on this runner (observed in the
+          # v0.1.0 run: "Error running candle.exe", exit 1), while NSIS is a
+          # native Win32 tool that packages fine. The arm64 installer is
+          # therefore a `-setup.exe`; the x64 job still ships the MSI.
           - name: windows arm64
             os: windows-11-arm
             arch: arm64
-            formats: "wix,nsis"
+            formats: "nsis"
             artifact: release-windows-arm64
             files: |
-              dist/*.msi
               dist/*.exe
           - name: linux arm64
             os: ubuntu-24.04-arm
@@ -124,7 +129,7 @@ jobs:
 
       # Package names embed the target architecture, so the x64 and arm64
       # artifacts never collide:
-      #   MSI  mikrotik-rif_<version>_x64_<lang>.msi / _arm64_<lang>.msi
+      #   MSI  mikrotik-rif_<version>_x64_<lang>.msi          (x64 only)
       #   NSIS mikrotik-rif_<version>_x64-setup.exe / _arm64-setup.exe
       #   DEB  mikrotik-rif_<version>_amd64.deb / _arm64.deb
       #   AppImage mikrotik-rif_<version>_x86_64.AppImage / _aarch64.AppImage

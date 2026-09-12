@@ -44,7 +44,7 @@ is no backend, no upload step, and no network code anywhere in the product.
 | OS | Pre-built binaries | Notes |
 | --- | --- | --- |
 | **macOS** | Apple Silicon (arm64) only | Intel Macs are **not** shipped. Build from source on Intel. |
-| **Windows** | x86_64 and arm64 | `.msi` and `-setup.exe` installers. |
+| **Windows** | x86_64 and arm64 | `.msi` on x64; `-setup.exe` on x64 and arm64. |
 | **Linux** | x86_64 and arm64 | `.deb`, `.rpm` and `.AppImage`. |
 
 The release workflow builds on **native** x86_64 and arm64 GitHub runners, so
@@ -61,7 +61,7 @@ Pre-built installers are attached to every tagged release:
 | Platform | Package | First-launch note |
 | --- | --- | --- |
 | macOS (Apple Silicon) | `.dmg` with the `.app` inside | Unsigned, so Gatekeeper may block it: right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
-| Windows (x64 / arm64) | `.msi` (WiX) and `-setup.exe` (NSIS) | Unsigned, so SmartScreen may warn: **More info → Run anyway**. |
+| Windows (x64 / arm64) | `.msi` (WiX, x64) and `-setup.exe` (NSIS, x64 + arm64) | Unsigned, so SmartScreen may warn: **More info → Run anyway**. |
 | Linux (x64 / arm64) | `.deb`, `.rpm`, `.AppImage` | Installs a menu entry and icon under `/usr/share/applications` and the hicolor theme. |
 
 ```sh

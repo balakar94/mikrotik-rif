@@ -57,6 +57,19 @@ icons = [
 ]
 license-file = "LICENSE"
 
+# The MIT notice and the three font licence texts have to travel inside every
+# artifact, not only in the source tree. cargo-packager copies these into
+# Contents/Resources on macOS and next to the executable on Windows, so the
+# .app/.dmg and the .msi/-setup.exe carry them too. On .deb they additionally
+# land under usr/lib/<binary>/licenses/, which is harmless duplication of the
+# conventional /usr/share/licenses/ entries below.
+resources = [
+    { src = "LICENSE", target = "licenses/LICENSE" },
+    { src = "assets/fonts/OFL-Inter.txt", target = "licenses/OFL-Inter.txt" },
+    { src = "assets/fonts/OFL-JetBrainsMono.txt", target = "licenses/OFL-JetBrainsMono.txt" },
+    { src = "assets/fonts/OFL-NotoSansSC.txt", target = "licenses/OFL-NotoSansSC.txt" },
+]
+
 # Shared by the .deb and AppImage. The template has no Handlebars placeholders,
 # so it renders to itself and stays in sync with the .rpm entry below.
 [package.metadata.packager.deb]
@@ -71,6 +84,7 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 "assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
 "assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
 "assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
+"LICENSE" = "/usr/share/licenses/mikrotik-rif/LICENSE"
 
 # AppImage reuses the .deb file-copying routine, so the same map is repeated for
 # the same destination inside the AppDir.
@@ -78,6 +92,7 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 "assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
 "assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
 "assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
+"LICENSE" = "/usr/share/licenses/mikrotik-rif/LICENSE"
 
 # RPM is the one format cargo-packager does not cover, so cargo-generate-rpm
 # reads this table and turns the already-built binary into a package. The
