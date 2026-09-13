@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Keeps SHA-pinned actions in .github/workflows/*.yml moving: Dependabot
+  # understands `SHA # tag` pins and opens PRs updating both together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # The lockfile is committed and CI builds with `--locked`, so a weekly
+  # grouped cargo update keeps dependencies fresh without PR spam.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo:
+        patterns:
+          - "*"

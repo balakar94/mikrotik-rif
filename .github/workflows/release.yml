@@ -37,10 +37,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download all installer artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
@@ -55,7 +55,7 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
           body: |
@@ -91,7 +91,3 @@ jobs:
               (x86_64) or `./mikrotik-rif-*.aarch64.rpm` (arm64)
           files: |
             dist/*
-            LICENSE
-            assets/fonts/OFL-Inter.txt
-            assets/fonts/OFL-JetBrainsMono.txt
-            assets/fonts/OFL-NotoSansSC.txt

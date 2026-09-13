@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # eframe 0.36 pulls winit (x11 + wayland backends) and wgpu (Vulkan
       # backend) on Linux. These -dev packages provide the pkg-config/headers
@@ -65,12 +65,12 @@ jobs:
             libvulkan-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
       # Formatting is OS-independent; run it exactly once.
       - name: Check formatting
@@ -82,3 +82,28 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+  deny:
+    name: cargo-deny (advisories + licenses)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      # Pinned `cargo install` instead of a third-party cargo-deny action:
+      # no extra action attack surface beyond the already-trusted (SHA-pinned)
+      # toolchain; `cargo install --locked --version` is reproducible from
+      # crates.io and the pin matches the version this policy was validated
+      # with locally (cargo-deny 0.19.0, see deny.toml header). Slower
+      # (compiles from source) but transparent and auditable.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.19.0
+
+      # Explicit check list so bans/sources defaults can never silently widen
+      # this policy. Exits non-zero on any advisory or unallowed license,
+      # which fails the CI job.
+      - name: Check advisories and licenses
+        run: cargo deny check advisories licenses

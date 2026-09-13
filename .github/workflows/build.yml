@@ -36,19 +36,17 @@ jobs:
           - name: windows x64
             os: windows-latest
             arch: x64
-            formats: "wix,nsis"
+            formats: "nsis"
             artifact: release-windows-x64
             files: |
-              dist/*.msi
               dist/*.exe
           - name: macos arm64
             os: macos-latest
             arch: arm64
-            formats: "app,dmg"
+            formats: "dmg"
             artifact: release-macos-arm64
             files: |
               dist/*.dmg
-              dist/*.app.zip
           - name: linux x64
             os: ubuntu-latest
             arch: x64
@@ -62,11 +60,13 @@ jobs:
           # and available in private repositories (GitHub changelog
           # 2026-01-29; docs.github.com "GitHub-hosted runners reference").
           #
-          # NSIS only, no WiX. cargo-packager's WiX 3.11.2 `candle.exe` is an
-          # x86 .NET Framework 3.5 tool and dies on this runner (observed in the
-          # v0.1.0 run: "Error running candle.exe", exit 1), while NSIS is a
-          # native Win32 tool that packages fine. The arm64 installer is
-          # therefore a `-setup.exe`; the x64 job still ships the MSI.
+          # NSIS only, no WiX on either Windows job. cargo-packager's WiX
+          # 3.11.2 `candle.exe` is an x86 .NET Framework 3.5 tool and dies
+          # on this runner (observed in the v0.1.0 run: "Error running
+          # candle.exe", exit 1), while NSIS is a native Win32 tool that
+          # packages fine. The unsigned MSI also buys nothing over the
+          # unsigned NSIS installer for manual installs, so both Windows
+          # jobs ship a single `-setup.exe` each.
           - name: windows arm64
             os: windows-11-arm
             arch: arm64
@@ -85,7 +85,7 @@ jobs:
               dist/*.rpm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # eframe 0.36 builds winit (x11 + wayland) and wgpu (Vulkan) on Linux.
       # rfd 0.17.2 defaults to xdg-portal + wayland, so GTK3 is not needed;
@@ -110,10 +110,10 @@ jobs:
             libvulkan-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
       # cargo-packager does NOT compile the application itself (verified in
       # its README: "By default, the packager doesn't build your application").
@@ -129,10 +129,10 @@ jobs:
 
       # Package names embed the target architecture, so the x64 and arm64
       # artifacts never collide:
-      #   MSI  mikrotik-rif_<version>_x64_<lang>.msi          (x64 only)
       #   NSIS mikrotik-rif_<version>_x64-setup.exe / _arm64-setup.exe
       #   DEB  mikrotik-rif_<version>_amd64.deb / _arm64.deb
       #   AppImage mikrotik-rif_<version>_x86_64.AppImage / _aarch64.AppImage
+      #   DMG  one .dmg per arch, consumed via the dist/*.dmg glob below
       - name: Package installers (cargo-packager)
         run: cargo packager --release --formats ${{ matrix.formats }}
 
@@ -148,19 +148,44 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo generate-rpm --output dist
 
-      # A zipped .app preserves symlinks/permissions and is what GitHub Release
-      # consumers expect (softprops/action-gh-release cannot upload a directory).
-      - name: Bundle macOS .app into a zip
-        if: runner.os == 'macOS'
+      # R1: the upload step below uses several globs, but
+      # `if-no-files-found: error` only fails when NO pattern matches at all,
+      # so a partial loss (e.g. .deb built but .rpm missing) would go
+      # unnoticed. Fail fast here if any format expected for this runner OS
+      # is absent from dist/.
+      - name: Assert packaged files
         shell: bash
         run: |
           set -euo pipefail
-          app="$(find dist -maxdepth 1 -name '*.app' -print -quit)"
-          if [ -z "${app}" ]; then
-            echo "No .app bundle found in dist/" >&2
+          missing=0
+          fail() { echo "ERROR: $*" >&2; missing=1; }
+          case "${{ runner.os }}" in
+            Windows)
+              compgen -G 'dist/*.exe' > /dev/null \
+                || fail "missing Windows installer: expected 'dist/*.exe' (NSIS setup)"
+              ;;
+            macOS)
+              compgen -G 'dist/*.dmg' > /dev/null \
+                || fail "missing macOS installer: expected 'dist/*.dmg'"
+              ;;
+            Linux)
+              compgen -G 'dist/*.deb' > /dev/null \
+                || fail "missing Linux package: expected 'dist/*.deb'"
+              compgen -G 'dist/*.AppImage' > /dev/null \
+                || fail "missing Linux package: expected 'dist/*.AppImage'"
+              compgen -G 'dist/*.rpm' > /dev/null \
+                || fail "missing Linux package: expected 'dist/*.rpm' (cargo-generate-rpm)"
+              ;;
+            *)
+              echo "ERROR: unsupported runner OS: '${{ runner.os }}'" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$missing" -ne 0 ]; then
+            echo "ERROR: one or more expected packaged files are missing for OS '${{ runner.os }}'" >&2
             exit 1
           fi
-          ditto -c -k --sequesterRsrc --keepParent "${app}" "dist/MikroTik-RIF-Viewer.app.zip"
+          echo "All expected packaged files present for OS '${{ runner.os }}'."
 
       - name: Show packaged files
         shell: bash
@@ -173,7 +198,7 @@ jobs:
       # github.run_id), so the caller can download these with
       # actions/download-artifact's default run-id of ${{ github.run_id }}.
       - name: Upload installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.files }}

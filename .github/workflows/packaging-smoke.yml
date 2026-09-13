@@ -1,0 +1,35 @@
+name: Packaging smoke
+
+# Exercises the real packaging matrix (build.yml) outside of tags, so a
+# breakage like the v0.1.0 WiX failure is caught before release week.
+# This workflow NEVER publishes: it only calls the reusable build workflow,
+# which builds and uploads installer artifacts to the run (retention 7 days).
+# Publishing lives exclusively in release.yml's publish job (tag-gated).
+
+on:
+  # Weekly smoke on the default branch.
+  schedule:
+    - cron: "0 6 * * 1"
+  # Manual smoke from the Actions tab (any branch).
+  workflow_dispatch:
+
+# Read-only: smoke only builds and uploads artifacts, like build.yml itself.
+permissions:
+  contents: read
+
+# Same pattern as ci.yml: cancel superseded runs on the same ref to save
+# runner minutes. Smoke never runs on tags, so unconditional cancel is safe
+# (unlike build.yml, which must not cancel in-progress tag builds).
+concurrency:
+  group: packaging-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaging:
+    name: package installers (smoke, no publish)
+    # Reusable workflow call: the whole per-platform matrix lives in build.yml.
+    # Artifacts uploaded by the called workflow belong to this run (they share
+    # github.run_id). No release/publish job follows, so nothing is published.
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
