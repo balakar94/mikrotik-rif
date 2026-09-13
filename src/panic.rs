@@ -170,17 +170,26 @@ fn append_log_to(path: &Path, message: &str, location: &str) -> std::io::Result<
                 format!("{secs}s since epoch")
             },
         );
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    // Truncation is done by reopening the file rather than with
+    // `File::set_len`: on Windows the append-only handle does not carry the
+    // access right that resizing requires, so `set_len` fails there.
+    let oversized = std::fs::metadata(path).is_ok_and(|meta| meta.len() > MAX_LOG_BYTES);
+    let mut file = if oversized {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?
+    } else {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    if file.metadata()?.len() > MAX_LOG_BYTES {
-        file.set_len(0)?;
     }
     writeln!(file, "[{timestamp}] panic: {message} ({location})")
 }
