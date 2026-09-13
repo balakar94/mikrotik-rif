@@ -14,7 +14,8 @@
 
 Open a capture and read every module it contains — configuration, logs,
 interfaces and more — in a fast, native window. Everything runs locally: there
-is no backend, no upload step, and no network code anywhere in the product.
+is no backend, no upload step, and no network code except the opt-out update
+check described below.
 
 - **Product name:** MikroTik RIF Viewer
 - **Package / binary:** `mikrotik-rif`
@@ -24,8 +25,12 @@ is no backend, no upload step, and no network code anywhere in the product.
 ## Highlights
 
 - **Offline by construction.** The parser is UI-agnostic and free of filesystem
-  access; the app never opens a socket and never writes to disk unless you ask
-  it to export a module.
+  access; the app never opens a socket except for the update check below, and
+  never writes to disk unless you ask it to export a module.
+- **Self-updating, politely.** At most once a day the app asks the GitHub
+  releases API whether a newer version is out (opt out in the footer); a
+  dismissable banner offers the download, every installer is SHA-256-verified
+  against the release's `SHA256SUMS.txt`, and the final install step is yours.
 - **Cheap to open, cheap to read.** Indexing transcodes just enough of each part
   to learn its label and keeps the payload compressed. A single part is inflated
   on demand, so peak memory tracks the open module, not the whole file.
@@ -43,9 +48,9 @@ is no backend, no upload step, and no network code anywhere in the product.
 
 | OS | Pre-built binaries | Notes |
 | --- | --- | --- |
-| **macOS** | Apple Silicon (arm64) only | Intel Macs are **not** shipped. Build from source on Intel. |
-| **Windows** | x86_64 and arm64 | `.msi` on x64; `-setup.exe` on x64 and arm64. |
-| **Linux** | x86_64 and arm64 | `.deb`, `.rpm` and `.AppImage`. |
+| **macOS** | Apple Silicon (arm64) only | Intel Macs are **not** shipped. Build from source on Intel. Double-clicking a `.rif` file opens it in the viewer. |
+| **Windows** | x86_64 and arm64 | `-setup.exe` installer (NSIS). Double-clicking a `.rif` file opens it in the viewer. |
+| **Linux** | x86_64 and arm64 | `.deb`, `.rpm` and `.AppImage`. Double-clicking a `.rif` file opens it in the viewer (system MIME database entry included). |
 
 The release workflow builds on **native** x86_64 and arm64 GitHub runners, so
 there is no cross-compiling and no 32-bit target. Every package name embeds its
@@ -60,9 +65,9 @@ Pre-built installers are attached to every tagged release:
 
 | Platform | Package | First-launch note |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `.dmg` with the `.app` inside | Unsigned, so Gatekeeper may block it: right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
-| Windows (x64 / arm64) | `.msi` (WiX, x64) and `-setup.exe` (NSIS, x64 + arm64) | Unsigned, so SmartScreen may warn: **More info → Run anyway**. |
-| Linux (x64 / arm64) | `.deb`, `.rpm`, `.AppImage` | Installs a menu entry and icon under `/usr/share/applications` and the hicolor theme. |
+| macOS (Apple Silicon) | `.dmg` with the `.app` inside | Unsigned, so Gatekeeper may block it: right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. `.rif` files open in the viewer on double-click. |
+| Windows (x64 / arm64) | `-setup.exe` installer (NSIS) | Unsigned, so SmartScreen may warn: **More info → Run anyway**. `.rif` files open in the viewer on double-click. |
+| Linux (x64 / arm64) | `.deb`, `.rpm`, `.AppImage` | Installs a menu entry and icon under `/usr/share/applications` and the hicolor theme, plus a `application/x-mikrotik-rif` MIME definition so `.rif` files open in the viewer on double-click. |
 
 ```sh
 sudo apt install ./mikrotik-rif_*_amd64.deb        # Debian/Ubuntu, x64
@@ -82,7 +87,9 @@ The shell moves through four stages:
 1. **Welcome.** The product name, a small diagram of the workflow (router →
    capture → technician) and a single **Start** action.
 2. **Home.** Drag your `supout.rif` anywhere onto the window, or click the drop
-   target to pick a file.
+   target to pick a file. Double-clicking a `.rif` file in the file manager
+   opens it straight in the workspace (the installers associate the extension
+   with the viewer; the path arrives as `argv[1]`).
 3. **Opening.** While the capture is read and indexed, a page stack fans open
    under a magnifying glass. The animation is driven by the real byte-read
    progress and then fades into the workspace.
@@ -237,8 +244,8 @@ the CJK font.
 The release workflow is triggered by pushing a version tag:
 
 ```sh
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
 It builds the installers on native runners, computes `SHA256SUMS.txt` and
