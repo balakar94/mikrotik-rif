@@ -24,7 +24,7 @@ sys-locale = "0.3"
 ureq = { version = "3", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 semver = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 open = "5"
 
 # Compiles app.rc on Windows so the .exe carries the application icon.

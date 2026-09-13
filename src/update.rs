@@ -558,7 +558,21 @@ pub fn hash_file(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&chunk[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
+/// Lowercase hexadecimal rendering of a byte slice.
+///
+/// Spelled out instead of `format!("{:x}")`: the digest crates return an
+/// `Array` byte container that stopped implementing `LowerHex`.
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 /// Collapse release notes to a single short line for the update banner.
@@ -1273,13 +1287,12 @@ mod tests {
     fn sha256_known_vector_without_network() {
         // Well-known SHA-256 of "abc"; local data only.
         let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        let digest = Sha256::digest(b"abc");
-        assert_eq!(format!("{digest:x}"), expected);
-        assert!(digests_match(
-            &format!("{digest:x}"),
-            &expected.to_ascii_uppercase()
-        ));
-        assert!(!digests_match(&format!("{digest:x}"), "00"));
+        let digest = hex_encode(Sha256::digest(b"abc").as_slice());
+        assert_eq!(digest, expected);
+        assert!(digests_match(&digest, &expected.to_ascii_uppercase()));
+        assert!(!digests_match(&digest, "00"));
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
     }
 
     /// Scratch file unique to this test process and counter.
