@@ -1,6 +1,6 @@
 [package]
 name = "mikrotik-rif"
-description = "MikroTik RIF Viewer — offline reader for RouterOS supout captures"
+description = "MikroTik RIF Viewer — reader for RouterOS supout captures"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"

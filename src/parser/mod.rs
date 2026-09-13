@@ -1,4 +1,4 @@
-//! Offline reader for MikroTik RouterOS `supout` capture archives.
+//! Reader for MikroTik RouterOS `supout` capture archives.
 //!
 //! A capture is a text envelope: line-delimited marker pairs, each wrapping one
 //! named part whose bytes are encoded with a base64-family alphabet and a
