@@ -48,19 +48,27 @@ cross-compilation).
 
 ## Artifacts produced per runner and architecture
 
-| Runner | Architecture | Tool | Formats (arch appears in the file name) |
-| --- | --- | --- | --- |
-| `windows-latest` | x64 | cargo-packager | NSIS `-setup.exe` (`..._x64...`) |
-| `windows-11-arm` | arm64 | cargo-packager | NSIS `-setup.exe` (`..._arm64...`) |
-| `macos-latest` | arm64 (Apple Silicon) | cargo-packager | `.dmg` (the `.app` bundle is built as an intermediate step and imaged into the disk image) |
-| `ubuntu-latest` | x64 | cargo-packager | `.deb` (`amd64`), `.AppImage` (`x86_64`) |
-| `ubuntu-24.04-arm` | arm64 | cargo-packager | `.deb` (`arm64`), `.AppImage` (`aarch64`) |
-| `ubuntu-latest` | x64 | cargo-generate-rpm | `.rpm` (`x86_64`) |
-| `ubuntu-24.04-arm` | arm64 | cargo-generate-rpm | `.rpm` (`aarch64`) |
+Every artifact is published under one scheme,
+`mikrotik-rif_<version>_<arch>.<ext>` (or `..._<arch>-setup.exe` on Windows),
+with `<arch>` in `{amd64, arm64}`. The tools name their output their own way —
+cargo-packager after the binary, cargo-generate-rpm after the RPM NEVRA, and
+the macOS disk image after the product — so `build.yml` renames everything to
+this scheme in its "Normalise release asset names" step.
 
-Because cargo-packager and cargo-generate-rpm include the target architecture
-in every installer name, the x64 and arm64 artifacts never collide when the
-release job merges them into a single `dist/` directory.
+| Runner | Architecture | Tool | Output format (published name uses `amd64` / `arm64`) |
+| --- | --- | --- | --- |
+| `windows-latest` | x64 | cargo-packager | NSIS `-setup.exe` |
+| `windows-11-arm` | arm64 | cargo-packager | NSIS `-setup.exe` |
+| `macos-latest` | arm64 (Apple Silicon) | cargo-packager | `.dmg` (the `.app` bundle is built as an intermediate step and imaged into the disk image) |
+| `ubuntu-latest` | x64 | cargo-packager | `.deb` |
+| `ubuntu-24.04-arm` | arm64 | cargo-packager | `.deb` |
+| `ubuntu-latest` | x64 | cargo-generate-rpm | `.rpm` |
+| `ubuntu-24.04-arm` | arm64 | cargo-generate-rpm | `.rpm` |
+
+The architecture is part of every published name, so the amd64 and arm64
+artifacts never collide when the release job merges them into a single `dist/`
+directory. Note that the `.rpm` **file** is renamed but keeps its internal
+NEVRA (`mikrotik-rif-<version>-1.<arch>`); only the download name is uniform.
 
 All builds are **unsigned**. No signing certificates or secrets are used.
 
@@ -70,9 +78,9 @@ The in-app updater (`src/update.rs`, the only network code in the product)
 polls `https://api.github.com/repos/balakar94/mikrotik-rif/releases/latest`,
 compares `tag_name` (`vX.Y.Z`) against its own version, and picks the installer
 for the current platform with the matching rules documented in that module
-(NSIS `-setup.exe` with `_x64`/`_arm64` on Windows, `.dmg` on Apple Silicon,
-`.deb`/`_amd64`·`_arm64`, `.rpm`/`x86_64`·`aarch64` and
-`.AppImage`/`x86_64`·`aarch64` on Linux, preferring native packages).
+(NSIS `-setup.exe` with `_amd64`/`_arm64` on Windows, `.dmg` on Apple Silicon,
+and `.deb` → `.rpm` → `.AppImage` with `_amd64`/`_arm64` on Linux, preferring
+native packages).
 
 **The file names above are a contract with the updater.** If `build.yml` ever
 renames an artifact, the table in `src/update.rs` (and its tests) must be
@@ -80,7 +88,13 @@ updated in the same change; otherwise the updater finds no match and falls
 back to opening the release page in the browser. The same holds for
 `SHA256SUMS.txt`: the release job must keep attaching it, because the updater
 deletes any download whose SHA-256 does not match its entry and never executes
-an unverified file. A fully silent handoff exists on Windows (the
+an unverified file. Packaged file names must also be **free of spaces and
+unusual characters** — GitHub Releases rewrites them on upload while
+`SHA256SUMS.txt` is generated from the local names, and a mismatch breaks both
+`sha256sum -c` and the updater's checksum lookup (it finds the asset by its
+published name); the normalisation step in `build.yml` enforces that.
+
+A fully silent handoff exists on Windows (the
 installer is launched and the app exits) and for Linux AppImages (the running
 image is replaced atomically and relaunched); on macOS and for native Linux
 packages the verified file is opened from `~/Downloads` so the user — or the
@@ -266,13 +280,13 @@ On Linux (pick the architecture you need; both are attached to the release):
 
 ```bash
 # Debian/Ubuntu
-sudo apt install ./mikrotik-rif_*_amd64.deb      # x86_64
-sudo apt install ./mikrotik-rif_*_arm64.deb      # arm64
+sudo apt install ./mikrotik-rif_<version>_amd64.deb    # amd64
+sudo apt install ./mikrotik-rif_<version>_arm64.deb    # arm64
 # AppImage
-chmod +x mikrotik-rif_*_x86_64.AppImage && ./mikrotik-rif_*_x86_64.AppImage
+chmod +x mikrotik-rif_<version>_amd64.AppImage && ./mikrotik-rif_<version>_amd64.AppImage
 # Fedora/RHEL
-sudo dnf install ./mikrotik-rif-*.x86_64.rpm     # x86_64
-sudo dnf install ./mikrotik-rif-*.aarch64.rpm    # arm64
+sudo dnf install ./mikrotik-rif_<version>_amd64.rpm    # amd64
+sudo dnf install ./mikrotik-rif_<version>_arm64.rpm    # arm64
 ```
 
 On macOS, after copying the app to `/Applications`:

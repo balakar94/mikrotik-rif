@@ -1,4 +1,4 @@
-//! In-app updater (v1): the single network path of an offline-first app.
+//! In-app updater: the only code in the product that opens a socket.
 //!
 //! Everything else in this product runs locally and never opens a socket. This
 //! module owns the only exception: a poll of the GitHub Releases API plus the
@@ -30,13 +30,16 @@
 //! tests) must be updated together, or the updater will fall back to opening
 //! the release page in the browser.
 //!
+//! Every artifact is named `mikrotik-rif_<version>_<arch>.<ext>` (or
+//! `..._<arch>-setup.exe` on Windows), with `<arch>` in `{amd64, arm64}`.
+//!
 //! | OS (`std::env::consts::OS`) | Arch (`std::env::consts::ARCH`) | Asset match (all conditions hold) |
 //! | --- | --- | --- |
-//! | `windows` | `x86_64` | name ends with `-setup.exe` and contains `_x64` |
+//! | `windows` | `x86_64` | name ends with `-setup.exe` and contains `_amd64` |
 //! | `windows` | `aarch64` | name ends with `-setup.exe` and contains `_arm64` |
 //! | `macos` | `aarch64` | name ends with `.dmg` (only Apple Silicon is shipped, and exactly one `.dmg` per release; a second one would need an architecture marker here) |
-//! | `linux` | `x86_64` | `.deb` containing `_amd64`, else `.rpm` containing `x86_64`, else `.AppImage` containing `x86_64` |
-//! | `linux` | `aarch64` | `.deb` containing `_arm64`, else `.rpm` containing `aarch64`, else `.AppImage` containing `aarch64` |
+//! | `linux` | `x86_64` | `.deb` containing `_amd64`, else `.rpm` containing `_amd64`, else `.AppImage` containing `_amd64` |
+//! | `linux` | `aarch64` | `.deb` containing `_arm64`, else `.rpm` containing `_arm64`, else `.AppImage` containing `_arm64` |
 //! | anything else | anything else | no match — the updater opens the release page instead |
 //!
 //! Preference rationale on Linux: when the app itself runs from an AppImage
@@ -350,8 +353,8 @@ pub fn now_unix() -> u64 {
 
 /// Whether an automatic check may run now (at most once a day).
 ///
-/// Pure so the scheduling rule is unit-testable: the app is offline-first, so
-/// the "once a day" budget must hold even if the process restarts often.
+/// Pure so the scheduling rule is unit-testable: the "once a day" budget must
+/// hold even if the process restarts often.
 #[must_use]
 pub const fn should_auto_check(
     enabled: bool,
@@ -394,6 +397,20 @@ pub fn is_update(current: &str, tag: &str) -> bool {
     tag_version.pre.is_empty() && tag_version > current_version
 }
 
+/// Architecture token used in the release asset names.
+///
+/// Maps a `std::env::consts::ARCH` value to the `amd64` / `arm64` spelling
+/// that every artifact shares. `None` for architectures the project does not
+/// ship, so the caller falls back to the release page.
+#[must_use]
+pub fn asset_arch(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("amd64"),
+        "aarch64" => Some("arm64"),
+        _ => None,
+    }
+}
+
 /// Pick the release asset that installs this app on `(os, arch)`.
 ///
 /// `os` and `arch` use the `std::env::consts` vocabulary (`"windows"`,
@@ -410,12 +427,12 @@ pub fn is_update(current: &str, tag: &str) -> bool {
 )]
 #[must_use]
 pub fn select_asset<'a>(assets: &'a [AssetInfo], os: &str, arch: &str) -> Option<&'a AssetInfo> {
-    match (os, arch) {
-        ("windows", "x86_64") => assets.iter().find(|asset| is_setup(asset, "_x64")),
-        ("windows", "aarch64") => assets.iter().find(|asset| is_setup(asset, "_arm64")),
-        ("macos", "aarch64") => assets.iter().find(|asset| asset.name.ends_with(".dmg")),
-        ("linux", "x86_64") => select_linux(assets, "_amd64", "x86_64"),
-        ("linux", "aarch64") => select_linux(assets, "_arm64", "aarch64"),
+    let token = asset_arch(arch)?;
+    let marker = format!("_{token}");
+    match (os, token) {
+        ("windows", _) => assets.iter().find(|asset| is_setup(asset, &marker)),
+        ("macos", "arm64") => assets.iter().find(|asset| asset.name.ends_with(".dmg")),
+        ("linux", _) => select_linux(assets, &marker),
         _ => None,
     }
 }
@@ -434,8 +451,10 @@ pub fn select_asset_for_current(assets: &[AssetInfo]) -> Option<&AssetInfo> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     if os == "linux" && running_appimage().is_some() {
-        if let Some(image) = find_appimage(assets, arch) {
-            return Some(image);
+        if let Some(token) = asset_arch(arch) {
+            if let Some(image) = find_appimage(assets, &format!("_{token}")) {
+                return Some(image);
+            }
         }
     }
     select_asset(assets, os, arch)
@@ -452,39 +471,33 @@ fn is_setup(asset: &AssetInfo, arch_marker: &str) -> bool {
 
 /// Linux preference order: native `.deb`, then `.rpm`, then `.AppImage`.
 ///
-/// `deb_marker` is the Debian architecture token (`_amd64` / `_arm64`);
-/// `generic_marker` is the `std::env::consts::ARCH` spelling used by the
-/// `.rpm` and `.AppImage` names (`x86_64` / `aarch64`).
+/// `marker` is the `_amd64` / `_arm64` token shared by every Linux artifact.
 #[allow(
     clippy::case_sensitive_file_extension_comparisons,
     reason = "asset names are byte-exact CI artifacts; case-insensitive matching would widen the contract"
 )]
-fn select_linux<'a>(
-    assets: &'a [AssetInfo],
-    deb_marker: &str,
-    generic_marker: &str,
-) -> Option<&'a AssetInfo> {
+fn select_linux<'a>(assets: &'a [AssetInfo], marker: &str) -> Option<&'a AssetInfo> {
     assets
         .iter()
-        .find(|asset| asset.name.ends_with(".deb") && asset.name.contains(deb_marker))
+        .find(|asset| asset.name.ends_with(".deb") && asset.name.contains(marker))
         .or_else(|| {
             assets
                 .iter()
-                .find(|asset| asset.name.ends_with(".rpm") && asset.name.contains(generic_marker))
+                .find(|asset| asset.name.ends_with(".rpm") && asset.name.contains(marker))
         })
-        .or_else(|| find_appimage(assets, generic_marker))
+        .or_else(|| find_appimage(assets, marker))
 }
 
-/// The `.AppImage` asset for `generic_marker` (`x86_64` / `aarch64`), shared
-/// by [`select_linux`] and [`select_asset_for_current`].
+/// The `.AppImage` asset for `marker` (`_amd64` / `_arm64`), shared by
+/// [`select_linux`] and [`select_asset_for_current`].
 #[allow(
     clippy::case_sensitive_file_extension_comparisons,
     reason = "asset names are byte-exact CI artifacts; case-insensitive matching would widen the contract"
 )]
-fn find_appimage<'a>(assets: &'a [AssetInfo], generic_marker: &str) -> Option<&'a AssetInfo> {
+fn find_appimage<'a>(assets: &'a [AssetInfo], marker: &str) -> Option<&'a AssetInfo> {
     assets
         .iter()
-        .find(|asset| asset.name.ends_with(".AppImage") && asset.name.contains(generic_marker))
+        .find(|asset| asset.name.ends_with(".AppImage") && asset.name.contains(marker))
 }
 
 /// Download URL of the release's [`CHECKSUMS_FILE_NAME`], if attached.
@@ -1048,15 +1061,15 @@ mod tests {
 
     fn realistic_assets() -> Vec<AssetInfo> {
         vec![
-            asset("mikrotik-rif_0.2.0_x64-setup.exe"),
+            asset("mikrotik-rif_0.2.0_amd64-setup.exe"),
             asset("mikrotik-rif_0.2.0_arm64-setup.exe"),
             asset("mikrotik-rif_0.2.0_arm64.dmg"),
             asset("mikrotik-rif_0.2.0_amd64.deb"),
             asset("mikrotik-rif_0.2.0_arm64.deb"),
-            asset("mikrotik-rif-0.2.0-1.x86_64.rpm"),
-            asset("mikrotik-rif-0.2.0-1.aarch64.rpm"),
-            asset("mikrotik-rif_0.2.0_x86_64.AppImage"),
-            asset("mikrotik-rif_0.2.0_aarch64.AppImage"),
+            asset("mikrotik-rif_0.2.0_amd64.rpm"),
+            asset("mikrotik-rif_0.2.0_arm64.rpm"),
+            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
+            asset("mikrotik-rif_0.2.0_arm64.AppImage"),
             asset("SHA256SUMS.txt"),
         ]
     }
@@ -1131,7 +1144,7 @@ mod tests {
         let assets = realistic_assets();
         assert_eq!(
             select_asset(&assets, "windows", "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_x64-setup.exe")
+            Some("mikrotik-rif_0.2.0_amd64-setup.exe")
         );
         assert_eq!(
             select_asset(&assets, "windows", "aarch64").map(|found| found.name.as_str()),
@@ -1174,22 +1187,22 @@ mod tests {
     #[test]
     fn linux_falls_back_through_rpm_to_appimage() {
         let without_deb = vec![
-            asset("mikrotik-rif-0.2.0-1.x86_64.rpm"),
-            asset("mikrotik-rif_0.2.0_x86_64.AppImage"),
-            asset("mikrotik-rif-0.2.0-1.aarch64.rpm"),
-            asset("mikrotik-rif_0.2.0_aarch64.AppImage"),
+            asset("mikrotik-rif_0.2.0_amd64.rpm"),
+            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
+            asset("mikrotik-rif_0.2.0_arm64.rpm"),
+            asset("mikrotik-rif_0.2.0_arm64.AppImage"),
         ];
         assert_eq!(
             select_asset(&without_deb, "linux", "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif-0.2.0-1.x86_64.rpm")
+            Some("mikrotik-rif_0.2.0_amd64.rpm")
         );
         let portable_only = vec![
-            asset("mikrotik-rif_0.2.0_x86_64.AppImage"),
-            asset("mikrotik-rif_0.2.0_aarch64.AppImage"),
+            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
+            asset("mikrotik-rif_0.2.0_arm64.AppImage"),
         ];
         assert_eq!(
             select_asset(&portable_only, "linux", "aarch64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_aarch64.AppImage")
+            Some("mikrotik-rif_0.2.0_arm64.AppImage")
         );
     }
 
@@ -1197,12 +1210,12 @@ mod tests {
     fn linux_never_crosses_architectures() {
         let x64_only = vec![
             asset("mikrotik-rif_0.2.0_amd64.deb"),
-            asset("mikrotik-rif-0.2.0-1.x86_64.rpm"),
-            asset("mikrotik-rif_0.2.0_x86_64.AppImage"),
+            asset("mikrotik-rif_0.2.0_amd64.rpm"),
+            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
         ];
         assert!(
             select_asset(&x64_only, "linux", "aarch64").is_none(),
-            "x86_64 assets must not serve arm64"
+            "amd64 assets must not serve arm64"
         );
         assert!(
             select_asset(&[], "linux", "x86_64").is_none(),
@@ -1363,12 +1376,12 @@ mod tests {
     fn appimage_lookup_finds_the_portable_asset() {
         let assets = realistic_assets();
         assert_eq!(
-            find_appimage(&assets, "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_x86_64.AppImage")
+            find_appimage(&assets, "_amd64").map(|found| found.name.as_str()),
+            Some("mikrotik-rif_0.2.0_amd64.AppImage")
         );
         assert_eq!(
-            find_appimage(&assets, "aarch64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_aarch64.AppImage")
+            find_appimage(&assets, "_arm64").map(|found| found.name.as_str()),
+            Some("mikrotik-rif_0.2.0_arm64.AppImage")
         );
         assert!(find_appimage(&assets, "riscv64").is_none());
         // The preference is not a filter: `select_asset` still prefers the

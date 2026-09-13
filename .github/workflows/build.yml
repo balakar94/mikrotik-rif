@@ -127,12 +127,12 @@ jobs:
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked --version 0.11.8
 
-      # Package names embed the target architecture, so the x64 and arm64
-      # artifacts never collide:
-      #   NSIS mikrotik-rif_<version>_x64-setup.exe / _arm64-setup.exe
-      #   DEB  mikrotik-rif_<version>_amd64.deb / _arm64.deb
-      #   AppImage mikrotik-rif_<version>_x86_64.AppImage / _aarch64.AppImage
-      #   DMG  one .dmg per arch, consumed via the dist/*.dmg glob below
+      # Each tool names its output its own way (cargo-packager after the binary
+      # and per-format arch spellings, cargo-generate-rpm after the RPM NEVRA,
+      # the macOS disk image after the product). Every artifact is renamed to
+      # one scheme in the "Normalise release asset names" step below:
+      #   mikrotik-rif_<version>_<arch>.deb|.rpm|.AppImage|.dmg
+      #   mikrotik-rif_<version>_<arch>-setup.exe
       - name: Package installers (cargo-packager)
         run: cargo packager --release --formats ${{ matrix.formats }}
 
@@ -147,6 +147,54 @@ jobs:
       - name: Generate .rpm package (cargo-generate-rpm)
         if: runner.os == 'Linux'
         run: cargo generate-rpm --output dist
+
+      # Rename every artifact to the single release scheme, with the
+      # architecture token in {amd64, arm64}:
+      #   mikrotik-rif_<version>_<arch>.deb|.rpm|.AppImage|.dmg
+      #   mikrotik-rif_<version>_<arch>-setup.exe
+      # Two reasons: the packaging tools each invent their own name (the macOS
+      # disk image gets the product name, cargo-generate-rpm uses the RPM
+      # NEVRA with its "-1" release, cargo-packager mixes arch spellings), and
+      # GitHub Releases rewrites spaces in uploaded file names while
+      # SHA256SUMS.txt is generated from the local names, so a mismatch breaks
+      # both `sha256sum -c` and the updater's checksum lookup. The updater's
+      # asset table in src/update.rs matches these exact names.
+      - name: Normalise release asset names
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ -z "${version}" ]; then
+            echo "ERROR: could not read the version from Cargo.toml" >&2
+            exit 1
+          fi
+          case "${{ matrix.arch }}" in
+            x64) arch="amd64" ;;
+            arm64) arch="arm64" ;;
+            *)
+              echo "ERROR: unknown matrix arch '${{ matrix.arch }}'" >&2
+              exit 1
+              ;;
+          esac
+          for file in dist/*; do
+            [ -f "${file}" ] || continue
+            case "${file}" in
+              *.deb) ext=".deb" ;;
+              *.rpm) ext=".rpm" ;;
+              *.AppImage) ext=".AppImage" ;;
+              *.dmg) ext=".dmg" ;;
+              *-setup.exe) ext="-setup.exe" ;;
+              *)
+                echo "WARNING: leaving unrecognised artifact '${file}' alone" >&2
+                continue
+                ;;
+            esac
+            target="dist/mikrotik-rif_${version}_${arch}${ext}"
+            if [ "${file}" != "${target}" ]; then
+              echo "Renaming '${file}' -> '${target}'"
+              mv "${file}" "${target}"
+            fi
+          done
 
       # R1: the upload step below uses several globs, but
       # `if-no-files-found: error` only fails when NO pattern matches at all,
