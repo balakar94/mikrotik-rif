@@ -251,6 +251,10 @@ pub enum HandoffAction {
     InstallerLaunched,
     /// Linux AppImage: the running image was replaced and relaunched; the
     /// caller should exit.
+    #[allow(
+        dead_code,
+        reason = "constructed only by the Linux-only self-replace path; the variant stays on every target so the call sites match exhaustively"
+    )]
     AppImageReplaced,
     /// macOS/Linux: the file was opened with the desktop handler.
     PackageOpened,
