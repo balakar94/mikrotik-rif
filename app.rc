@@ -1,0 +1,8 @@
+// Windows resource script: embeds the application icon into mikrotik-rif.exe.
+//
+// Compiled by build.rs via the `embed-resource` crate. The path below is
+// relative to the repository root (the crate manifest dir), which is both the
+// build script's working directory and this file's directory, so it resolves
+// regardless of whether the resource compiler resolves relative to the .rc
+// file or to the working directory.
+1 ICON "assets/icon/icon.ico"

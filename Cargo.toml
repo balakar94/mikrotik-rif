@@ -6,6 +6,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/balakar94/mikrotik-rif"
 
 [[bin]]
 name = "mikrotik-rif"
@@ -20,6 +21,16 @@ rfd = "0.17"
 fluent-bundle = "0.16"
 unic-langid = "0.9"
 sys-locale = "0.3"
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+semver = "1"
+sha2 = "0.10"
+open = "5"
+
+# Compiles app.rc on Windows so the .exe carries the application icon.
+# On other hosts/targets embed-resource is a no-op (NotWindows).
+[build-dependencies]
+embed-resource = "3"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -60,7 +71,7 @@ license-file = "LICENSE"
 # The MIT notice and the three font licence texts have to travel inside every
 # artifact, not only in the source tree. cargo-packager copies these into
 # Contents/Resources on macOS and next to the executable on Windows, so the
-# .app/.dmg and the .msi/-setup.exe carry them too. On .deb they additionally
+# .app/.dmg and the -setup.exe carry them too. On .deb they additionally
 # land under usr/lib/<binary>/licenses/, which is harmless duplication of the
 # conventional /usr/share/licenses/ entries below.
 resources = [
@@ -69,6 +80,43 @@ resources = [
     { src = "assets/fonts/OFL-JetBrainsMono.txt", target = "licenses/OFL-JetBrainsMono.txt" },
     { src = "assets/fonts/OFL-NotoSansSC.txt", target = "licenses/OFL-NotoSansSC.txt" },
 ]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `.rif` file association (double-click opens the viewer) on every platform.
+# The viewer reads the capture path from argv[1] (see src/app.rs), so this is
+# purely declarative packaging metadata — no Rust changes are needed.
+# Keys verified against cargo-packager 0.11.8 source
+# (`src/config/mod.rs`: top-level `file_associations` with `file-associations`
+# / `file_associations` aliases; `FileAssociation { extensions, mime_type
+# (alias `mime-type`), description, name, role }`, `rename_all = "camelCase"`):
+#   * Windows (NSIS): each extension is registered with the APP_ASSOCIATE
+#     macro (`src/package/nsis/installer.nsi`), i.e. `HKCR\.rif` plus a
+#     `shell\open\command` of `"<INSTDIR>\mikrotik-rif.exe" "%1"`. That is the
+#     default double-click `open` verb only; no APP_ASSOCIATE_ADDVERB verb is
+#     emitted, so no extra context-menu entry is created (per user constraint).
+#     `description` is Windows-only (Explorer "Type" column).
+#   * macOS (.app/.dmg): becomes a `CFBundleDocumentTypes` entry with
+#     `CFBundleTypeExtensions`, `CFBundleTypeName` (from `name`) and
+#     `CFBundleTypeRole` (from `role`) in `src/package/app/mod.rs`.
+#     `role = "viewer"` (CFBundleTypeRole.Viewer: files can be read) fits a
+#     read-only viewer; the default would be `"editor"`. `mime-type` is
+#     Linux-only and is ignored here.
+#   * Linux (.deb/AppImage): cargo-packager derives `{{exec_arg}}` = `%F` and
+#     `MimeType={{mime_type}}` from this table (`src/package/deb/mod.rs`),
+#     but only templates using those Handlebars placeholders see them. The
+#     shared `assets/linux/mikrotik-rif.desktop` is deliberately
+#     placeholder-free (renders to itself), so it carries the matching
+#     hardcoded `MimeType=application/x-mikrotik-rif;` line instead; `Exec`
+#     already ends in `%F`, which is exactly what `{{exec_arg}}` would inject.
+#     The matching shared-mime-info XML below defines the type itself.
+# `.rpm` is not built by cargo-packager, so the desktop file and the MIME XML
+# are installed explicitly through the assets maps further down.
+[[package.metadata.packager.file-associations]]
+extensions = ["rif"]
+mime-type = "application/x-mikrotik-rif"
+description = "MikroTik RouterOS Support Capture"
+name = "RouterOS Support Capture"
+role = "viewer"
 
 # Shared by the .deb and AppImage. The template has no Handlebars placeholders,
 # so it renders to itself and stays in sync with the .rpm entry below.
@@ -80,11 +128,15 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 # package instead of only living in the source tree. cargo-packager strips the
 # leading "/" of the destination and places the file at that path inside the
 # package, so "/usr/share/..." lands in the data archive under usr/share/...
+# The shared-mime-info XML defines application/x-mikrotik-rif (advertised by
+# the desktop file's MimeType= line); the database refresh itself is
+# trigger-based via the shared-mime-info packaging hooks, so no scriptlets.
 [package.metadata.packager.deb.files]
 "assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
 "assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
 "assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
 "LICENSE" = "/usr/share/licenses/mikrotik-rif/LICENSE"
+"assets/linux/mikrotik-rif-mime.xml" = "/usr/share/mime/packages/mikrotik-rif.xml"
 
 # AppImage reuses the .deb file-copying routine, so the same map is repeated for
 # the same destination inside the AppDir.
@@ -93,15 +145,41 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 "assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
 "assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
 "LICENSE" = "/usr/share/licenses/mikrotik-rif/LICENSE"
+"assets/linux/mikrotik-rif-mime.xml" = "/usr/share/mime/packages/mikrotik-rif.xml"
+
+# macOS disk image: custom drag-to-/Applications window background.
+# Table and keys verified against cargo-packager 0.11.8 source
+# (`crates/packager/src/config/mod.rs` @ 9e88b74: `Config.dmg: Option<DmgConfig>`,
+# `DmgConfig { background, window_position, window_size, app_position,
+# app_folder_position }`, `rename_all = "camelCase"`, `deny_unknown_fields`):
+#   * `background` (png/jpg/gif) is resolved as `current_dir().join(p)` in
+#     `crates/packager/src/package/dmg/mod.rs`, i.e. relative to the repo root
+#     when `cargo packager` runs there — same as `license-file`. It is passed
+#     to the create-dmg script via `--background`.
+#   * `window-size` / `app-position` are verified serde aliases; the window
+#     defaults to 600x400 and the icons to app (180, 170) / folder (480, 170)
+#     when unset (`src/package/dmg/mod.rs`). Values below pin the defaults for
+#     the icon slots and match the window to the 660x400 background.
+#   * `application-folder-position` is the verified kebab alias of
+#     `appFolderPosition`. WARNING: `app-folder-position` and `window-position`
+#     / `window_size`-style variants of `window_position` do NOT exist in
+#     0.11.8 and fail parsing (`deny_unknown_fields`); the screen position
+#     (`windowPosition`, no kebab alias) is deliberately left unset.
+[package.metadata.packager.dmg]
+background = "assets/macos/dmg-background.png"
+window-size = { width = 660, height = 400 }
+app-position = { x = 180, y = 170 }
+application-folder-position = { x = 480, y = 170 }
 
 # RPM is the one format cargo-packager does not cover, so cargo-generate-rpm
 # reads this table and turns the already-built binary into a package. The
-# desktop entry and icon are installed by hand because cargo-generate-rpm knows
-# nothing about freedesktop integration.
+# desktop entry, icon and shared-mime-info XML are installed by hand because
+# cargo-generate-rpm knows nothing about freedesktop integration.
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/mikrotik-rif", dest = "/usr/bin/mikrotik-rif", mode = "755" },
     { source = "assets/linux/mikrotik-rif.desktop", dest = "/usr/share/applications/mikrotik-rif.desktop", mode = "644" },
+    { source = "assets/linux/mikrotik-rif-mime.xml", dest = "/usr/share/mime/packages/mikrotik-rif.xml", mode = "644" },
     { source = "assets/linux/mikrotik-rif-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mikrotik-rif.png", mode = "644" },
     { source = "LICENSE", dest = "/usr/share/licenses/mikrotik-rif/LICENSE", mode = "644" },
     { source = "assets/fonts/OFL-Inter.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt", mode = "644" },

@@ -12,6 +12,15 @@ fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let locales = manifest.join("locales");
     println!("cargo:rerun-if-changed=locales");
+    println!("cargo:rerun-if-changed=app.rc");
+    println!("cargo:rerun-if-changed=assets/icon/icon.ico");
+
+    // Embeds the application icon into the .exe on Windows. On other
+    // hosts/targets this is a no-op (`NotWindows`), and a missing resource
+    // compiler is tolerated so Linux/macOS builds never break because of it.
+    embed_resource::compile("app.rc", embed_resource::NONE)
+        .manifest_optional()
+        .unwrap();
 
     let mut discovered = Vec::new();
     if let Ok(entries) = fs::read_dir(&locales) {

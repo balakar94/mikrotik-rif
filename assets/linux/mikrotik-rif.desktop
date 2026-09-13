@@ -3,9 +3,20 @@
 # This single file is shared by every Linux package:
 #   * .deb / AppImage: cargo-packager uses it as the desktop template
 #     (`[package.metadata.packager.deb] desktop-template`). It is deliberately
-#     written without Handlebars placeholders, so it renders to itself.
+#     written without Handlebars placeholders, so it renders to itself; the
+#     `MimeType` below matches the `mime-type` declared in the declarative
+#     `[[package.metadata.packager.file-associations]]` entry in Cargo.toml,
+#     which a placeholder-free template would otherwise silently drop.
 #   * .rpm: cargo-generate-rpm installs it verbatim to
 #     /usr/share/applications/mikrotik-rif.desktop.
+#
+# Double-click opening of `.rif` files needs two halves: this `MimeType` line
+# (which advertises the association) and the shared-mime-info database entry
+# in `assets/linux/mikrotik-rif-mime.xml` (which defines the
+# `application/x-mikrotik-rif` type for new files). `Exec` keeps the `%F`
+# field code so the capture path is passed as argv[1], which the app already
+# reads (see src/app.rs); this matches the `%F` cargo-packager would inject
+# via `{{exec_arg}}` when file associations are declared.
 #
 # Icon= matches the icon name installed under
 # /usr/share/icons/hicolor/512x512/apps/mikrotik-rif.png.
@@ -21,3 +32,4 @@ Terminal=false
 Categories=Utility;Network;
 Keywords=RouterOS;MikroTik;supout;rif;router;capture;
 StartupNotify=true
+MimeType=application/x-mikrotik-rif;

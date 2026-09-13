@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MikroTik RIF Viewer — shared-mime-info definition for `.rif` captures.
+  -
+  - Installed to /usr/share/mime/packages/mikrotik-rif.xml by every Linux
+  - package (.deb and AppImage via the `deb.files` / `appimage.files` maps in
+  - Cargo.toml, .rpm via the `[package.metadata.generate-rpm]` assets), so the
+  - `MimeType=application/x-mikrotik-rif;` line in
+  - assets/linux/mikrotik-rif.desktop resolves to a real type and double-click
+  - opening works. The `x-` prefix marks it as an unregistered vendor type
+  - (no IANA registration exists for RouterOS captures). Glob-only matching
+  - (`*.rif`, the lowercase name RouterOS itself uses for `supout.rif`): no
+  - magic rule is declared. Database refresh is trigger-based (shared-mime-info
+  - packaging hooks run update-mime-database); no maintainer scriptlets are
+  - shipped. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-mikrotik-rif">
+    <comment>MikroTik RouterOS support capture</comment>
+    <glob pattern="*.rif"/>
+  </mime-type>
+</mime-info>
