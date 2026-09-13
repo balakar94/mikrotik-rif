@@ -4,7 +4,7 @@
 </h1>
 
 <p align="center">
-  An offline desktop viewer for MikroTik RouterOS support captures (<code>supout.rif</code>).
+  A desktop viewer for MikroTik RouterOS support captures (<code>supout.rif</code>).
 </p>
 
 <p align="center">
@@ -12,10 +12,16 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-Open a capture and read every module it contains — configuration, logs,
-interfaces and more — in a fast, native window. Everything runs locally: there
-is no backend, no upload step, and no network code except the opt-out update
-check described below.
+A RouterOS support capture is a single text file that packs dozens of
+diagnostic parts — the running configuration, interface and routing tables,
+logs, and the output of many `/export` and diagnostic commands. It is what a
+technician generates when something is wrong, and reading it normally means
+scrolling through one enormous blob of text.
+
+This viewer opens the file, indexes every part without unpacking all of it, and
+presents them as a searchable module list beside the decoded text. It runs
+entirely in the process: there is no backend, no upload step, and no network
+traffic other than the opt-out update check described below.
 
 - **Product name:** MikroTik RIF Viewer
 - **Package / binary:** `mikrotik-rif`
@@ -24,75 +30,73 @@ check described below.
 
 ## Highlights
 
-- **Offline by construction.** The parser is UI-agnostic and free of filesystem
-  access; the app never opens a socket except for the update check below, and
-  never writes to disk unless you ask it to export a module.
-- **Self-updating, politely.** At most once a day the app asks the GitHub
-  releases API whether a newer version is out (opt out in the footer); a
-  dismissable banner offers the download, every installer is SHA-256-verified
-  against the release's `SHA256SUMS.txt`, and the final install step is yours.
-- **Cheap to open, cheap to read.** Indexing transcodes just enough of each part
-  to learn its label and keeps the payload compressed. A single part is inflated
-  on demand, so peak memory tracks the open module, not the whole file.
+- **Indexes first, decodes on demand.** Opening a capture transcodes just enough
+  of each part to learn its label and keeps the payload compressed. A part is
+  inflated only when you select it, so peak memory tracks the open module rather
+  than the whole file.
 - **Responsive on huge captures.** Reading, indexing and decompression run on a
-  background worker thread; the module list and the text view are virtualized,
-  so a module with hundreds of thousands of lines scrolls smoothly.
+  background worker thread, and the module list and text view are virtualized,
+  so a module with hundreds of thousands of lines still scrolls smoothly.
 - **Honest about damage.** A part that cannot be indexed is still listed and
   marked, instead of being silently dropped.
+- **Everything stays on the machine.** The parser is UI-agnostic and touches no
+  files; the app writes nothing to disk unless you ask it to export a module.
 - **Follows your system.** Light/dark theme and interface language are detected
   from the OS and can be overridden per run.
-- **Seven languages** out of the box, with the base locale and English fallback
-  always available.
-
-## Platform support
-
-| OS | Pre-built binaries | Notes |
-| --- | --- | --- |
-| **macOS** | Apple Silicon (arm64) only | Intel Macs are **not** shipped. Build from source on Intel. Double-clicking a `.rif` file opens it in the viewer. |
-| **Windows** | x86_64 and arm64 | `-setup.exe` installer (NSIS). Double-clicking a `.rif` file opens it in the viewer. |
-| **Linux** | x86_64 and arm64 | `.deb`, `.rpm` and `.AppImage`. Double-clicking a `.rif` file opens it in the viewer (system MIME database entry included). |
-
-The release workflow builds on **native** x86_64 and arm64 GitHub runners, so
-there is no cross-compiling and no 32-bit target. Every package name embeds its
-architecture (`_x64`/`_arm64`, `_amd64`/`_arm64`, `_x86_64`/`_aarch64`), so both
-variants can be attached to the same release. Any other architecture is welcome
-to build from source — the only requirement is a Rust toolchain supported by
-eframe.
+- **Updates on your terms.** At most once a day the app asks the GitHub releases
+  API whether a newer version exists (opt out in the footer). A dismissable
+  banner offers the download, the installer is SHA-256-verified against the
+  release's `SHA256SUMS.txt`, and the final install step is always yours.
 
 ## Install
 
-Pre-built installers are attached to every tagged release:
+Pre-built packages are attached to every tagged release. They all share one
+name, `mikrotik-rif_<version>_<arch>.<ext>`, where `<arch>` is `amd64` (64-bit
+Intel/AMD) or `arm64`:
 
-| Platform | Package | First-launch note |
-| --- | --- | --- |
-| macOS (Apple Silicon) | `.dmg` with the `.app` inside | Unsigned, so Gatekeeper may block it: right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. `.rif` files open in the viewer on double-click. |
-| Windows (x64 / arm64) | `-setup.exe` installer (NSIS) | Unsigned, so SmartScreen may warn: **More info → Run anyway**. `.rif` files open in the viewer on double-click. |
-| Linux (x64 / arm64) | `.deb`, `.rpm`, `.AppImage` | Installs a menu entry and icon under `/usr/share/applications` and the hicolor theme, plus a `application/x-mikrotik-rif` MIME definition so `.rif` files open in the viewer on double-click. |
+| OS | Architectures | Package | First launch |
+| --- | --- | --- | --- |
+| **Windows** | `amd64`, `arm64` | `-setup.exe` installer (NSIS) | Unsigned: SmartScreen may warn — **More info → Run anyway**. |
+| **macOS** | Apple Silicon (`arm64`) only | `.dmg` (drag the app to Applications) | Unsigned: Gatekeeper blocks it — right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
+| **Debian / Ubuntu** | `amd64`, `arm64` | `.deb` | Installs a menu entry, an icon and the `.rif` file-type association. |
+| **Fedora / RHEL** | `amd64`, `arm64` | `.rpm` | Same as `.deb`. |
+| **Any Linux** | `amd64`, `arm64` | portable `.AppImage` | `chmod +x` and run it; no installation. |
+
+The Windows, macOS and Linux packages register the `.rif` extension, so
+double-clicking a capture opens it straight in the viewer (the path arrives as
+`argv[1]`); the portable `.AppImage` relies on the host to integrate its
+bundled MIME definition.
 
 ```sh
-sudo apt install ./mikrotik-rif_*_amd64.deb        # Debian/Ubuntu, x64
-sudo apt install ./mikrotik-rif_*_arm64.deb        # Debian/Ubuntu, arm64
-sudo dnf install ./mikrotik-rif-*.rpm               # Fedora/RHEL, either arch
-chmod +x MikroTik_RIF_*.AppImage && ./MikroTik_RIF_*.AppImage
+# Debian / Ubuntu
+sudo apt install ./mikrotik-rif_<version>_amd64.deb
+
+# Fedora / RHEL
+sudo dnf install ./mikrotik-rif_<version>_amd64.rpm
+
+# AppImage (any Linux distribution)
+chmod +x mikrotik-rif_<version>_amd64.AppImage && ./mikrotik-rif_<version>_amd64.AppImage
 ```
 
-Builds are intentionally unsigned for now: signing and notarization need paid
-Apple and Windows certificates, and can be added later through CI secrets
+Swap `amd64` for `arm64` on 64-bit ARM machines. Intel Macs are not shipped:
+build from source there. Every download is listed in `SHA256SUMS.txt`, so you
+can check it with `sha256sum -c SHA256SUMS.txt`.
+
+These builds are intentionally unsigned. Code signing and notarization need paid
+Apple and Windows certificates; they can be added later through CI secrets
 without changing the pipeline.
 
 ## Using the app
 
-The shell moves through four stages:
+The interface moves through four stages:
 
 1. **Welcome.** The product name, a small diagram of the workflow (router →
    capture → technician) and a single **Start** action.
-2. **Home.** Drag your `supout.rif` anywhere onto the window, or click the drop
-   target to pick a file. Double-clicking a `.rif` file in the file manager
-   opens it straight in the workspace (the installers associate the extension
-   with the viewer; the path arrives as `argv[1]`).
+2. **Home.** Drag a `supout.rif` anywhere onto the window, or click the drop
+   target to pick one.
 3. **Opening.** While the capture is read and indexed, a page stack fans open
-   under a magnifying glass. The animation is driven by the real byte-read
-   progress and then fades into the workspace.
+   under a magnifying glass. The animation tracks the real byte-read progress,
+   then fades into the workspace.
 4. **Workspace.** A **Modules** rail on the left with a name filter, and the
    decoded output of the selected module on the right.
 
@@ -100,12 +104,12 @@ In the workspace:
 
 - The rail can be collapsed from the panel button in the top bar, giving the
   text the full width.
-- Modules with the same label are disambiguated as `· copy 2`, `· copy 3`, and
+- Modules that share a label are disambiguated as `· copy 2`, `· copy 3`, and
   unreadable modules are listed in the alert colour.
 - **Line numbers** toggles the gutter.
 - The **magnifier** button opens in-module search; matches are highlighted and
-  counted, with previous/next navigation. Pressing Enter jumps to the next
-  match, Shift+Enter to the previous one, and Esc closes the bar.
+  counted, with previous/next navigation. Enter jumps to the next match,
+  Shift+Enter to the previous one, and Esc closes the bar.
 - **Copy** puts the open module on the clipboard; **Save as…** writes it to a
   text file.
 
@@ -118,37 +122,9 @@ Keyboard shortcuts (Command on macOS, Control elsewhere):
 | `Cmd/Ctrl+F` | Search in the open module |
 | `Esc` | Close the search bar |
 
-## Languages
-
-The interface ships in **English** (base locale) plus German, Spanish, French,
-Latvian, Russian and Simplified Chinese:
-
-| Locale | File |
-| --- | --- |
-| English (base) | `locales/en/mikrotik-rif.ftl` |
-| German | `locales/de/mikrotik-rif.ftl` |
-| Spanish | `locales/es/mikrotik-rif.ftl` |
-| French | `locales/fr/mikrotik-rif.ftl` |
-| Latvian | `locales/lv/mikrotik-rif.ftl` |
-| Russian | `locales/ru/mikrotik-rif.ftl` |
-| Chinese (Simplified) | `locales/zh/mikrotik-rif.ftl` |
-
-The system locale is matched on its base language; anything not shipped falls
-back to English, and any identifier a translation is missing falls back to the
-English string. Set `MIKROTIK_RIF_LANG` to force a locale for one run:
-
-```sh
-MIKROTIK_RIF_LANG=de cargo run -- supout.rif
-```
-
-Adding a language is just dropping a `locales/<tag>/mikrotik-rif.ftl` file: the
-build script discovers it and embeds it at compile time, with no registry to
-update by hand. A test asserts that every shipped locale defines exactly the
-same identifiers as the base file.
-
 ## Requirements
 
-- Rust 1.85 or newer (edition 2024).
+- Rust 1.85 or newer (edition 2024) to build.
 - A Vulkan/Metal/DX12-capable GPU for the default eframe `wgpu` renderer.
 - No runtime dependencies beyond the bundled fonts. On Linux, a desktop with
   X11 or Wayland.
@@ -194,26 +170,45 @@ configurable budgets:
 No real capture is committed to this repository: captures can carry sensitive
 router configuration, so the tests build synthetic captures in memory.
 
+## Localization
+
+The interface language follows the system locale and falls back to English.
+Translations are plain [Fluent](https://projectfluent.org/) files under
+`locales/<tag>/mikrotik-rif.ftl`: the build script discovers them and embeds
+them at compile time, with no registry to update by hand, and a test asserts
+that every locale defines exactly the same identifiers as the base file. Set
+`MIKROTIK_RIF_LANG` to force a locale for one run:
+
+```sh
+MIKROTIK_RIF_LANG=de cargo run -- supout.rif
+```
+
 ## Layout
 
 ```
 Cargo.toml
+app.rc               Windows icon resource compiled into the .exe
 LICENSE
-.github/workflows/   CI and the tag-triggered release pipeline
+.github/workflows/   CI, the tag-triggered release pipeline and a packaging smoke run
 docs/RELEASE.md      release engineering and verified prerequisites
 src/
   main.rs            entry point and module wiring
-  app.rs             stages, workspace, search and interaction
+  app.rs             application shell, stages and orchestration
+  app/workspace.rs   module rail, text view and in-module search
+  app/update_ui.rs   update banner and its state machine
   splash.rs          welcome, home and the opening animation
   theme.rs           light/dark palettes, background gradient, fonts
   icons.rs           vector icons drawn with the painter
   i18n.rs            Fluent loading, OS detection, fallback chain
+  panic.rs           last-resort panic log and dialog
+  update.rs          release check, verified download and hand-off
   worker.rs          background reading, indexing and decoding
   parser/            capture format reader (codec, scanner, deflate, capture, limits, error)
 locales/<tag>/mikrotik-rif.ftl
 assets/fonts/        bundled Inter, JetBrains Mono and Noto Sans SC (OFL)
 assets/icon/         application icon (PNG / ICNS / ICO)
-assets/linux/        freedesktop entry and 512 px icon for the Linux packages
+assets/linux/        freedesktop entry, MIME definition and 512 px icon
+assets/macos/        disk image background
 tools/make_icon.py   regenerates the icon assets
 dist/                generated installers (git-ignored)
 ```
@@ -232,26 +227,12 @@ The interface bundles three fonts, all under the
 egui does not use system fonts, so every glyph the interface can show has to be
 bundled. Inter covers Latin and Cyrillic; anything else falls through to Noto.
 Each bundled font keeps its OFL text next to it in the source tree
-(`assets/fonts/OFL-Inter.txt`, `OFL-JetBrainsMono.txt`, `OFL-NotoSansSC.txt`).
-The Linux packages also install all three under
-`/usr/share/licenses/mikrotik-rif/`, and every GitHub Release attaches them.
+(`assets/fonts/OFL-Inter.txt`, `OFL-JetBrainsMono.txt`, `OFL-NotoSansSC.txt`),
+and the Linux packages install all three under
+`/usr/share/licenses/mikrotik-rif/`.
 
 Because the fonts are embedded, the release binary is around 19 MB, most of it
 the CJK font.
-
-## Releasing
-
-The release workflow is triggered by pushing a version tag:
-
-```sh
-git tag -a v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
-```
-
-It builds the installers on native runners, computes `SHA256SUMS.txt` and
-publishes a GitHub Release. A manual `workflow_dispatch` run builds the
-artifacts without publishing. The full procedure, the verified packaging
-prerequisites and the rollback steps live in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ## License
 
