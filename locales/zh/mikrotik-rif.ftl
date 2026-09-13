@@ -64,3 +64,11 @@ error-save = 无法保存：{ $reason }
 ## 系统对话框
 dialog-open-title = 打开 RouterOS 支持包
 dialog-filter-name = RouterOS 支持包
+
+## 更新
+update-available = 发现新版本 { $version }
+update-check = 检查更新
+update-now = 立即更新
+update-later = 稍后
+update-skip = 跳过此版本
+update-auto = 自动检查更新

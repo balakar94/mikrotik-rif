@@ -74,3 +74,11 @@ error-save = Could not save: { $reason }
 ## Native dialogs
 dialog-open-title = Open a RouterOS capture
 dialog-filter-name = RouterOS capture
+
+## Updates
+update-available = Update { $version } is available
+update-check = Check for updates
+update-now = Update now
+update-later = Later
+update-skip = Skip this version
+update-auto = Automatic update checks

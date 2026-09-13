@@ -73,3 +73,11 @@ error-save = Speichern fehlgeschlagen: { $reason }
 ## Systemdialoge
 dialog-open-title = RouterOS-Aufzeichnung öffnen
 dialog-filter-name = RouterOS-Aufzeichnung
+
+## Updates
+update-available = Version { $version } ist verfügbar
+update-check = Nach Updates suchen
+update-now = Jetzt aktualisieren
+update-later = Später
+update-skip = Diese Version überspringen
+update-auto = Automatisch nach Updates suchen

@@ -73,3 +73,11 @@ error-save = Échec de l'enregistrement : { $reason }
 ## Boîtes de dialogue système
 dialog-open-title = Ouvrir une capture RouterOS
 dialog-filter-name = Capture RouterOS
+
+## Mises à jour
+update-available = La version { $version } est disponible
+update-check = Rechercher des mises à jour
+update-now = Mettre à jour
+update-later = Plus tard
+update-skip = Ignorer cette version
+update-auto = Vérifier les mises à jour automatiquement

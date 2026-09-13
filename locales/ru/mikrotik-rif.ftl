@@ -76,3 +76,11 @@ error-save = Не удалось сохранить: { $reason }
 ## Системные диалоги
 dialog-open-title = Открыть дамп RouterOS
 dialog-filter-name = Дамп RouterOS
+
+## Обновления
+update-available = Доступна версия { $version }
+update-check = Проверить обновления
+update-now = Обновить сейчас
+update-later = Позже
+update-skip = Пропустить эту версию
+update-auto = Проверять обновления автоматически

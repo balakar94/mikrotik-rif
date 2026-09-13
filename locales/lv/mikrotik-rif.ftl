@@ -76,3 +76,11 @@ error-save = Nevarēja saglabāt: { $reason }
 ## Sistēmas dialogi
 dialog-open-title = Atvērt RouterOS uztveri
 dialog-filter-name = RouterOS uztvere
+
+## Atjauninājumi
+update-available = Pieejams atjauninājums { $version }
+update-check = Meklēt atjauninājumus
+update-now = Atjaunināt tagad
+update-later = Vēlāk
+update-skip = Izlaist šo versiju
+update-auto = Automātiski meklēt atjauninājumus
