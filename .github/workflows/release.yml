@@ -59,35 +59,59 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            Unsigned build: no Apple or Windows code-signing certificates are used.
+            Desktop viewer for MikroTik RouterOS support captures (`supout.rif`).
 
-            ### macOS — Gatekeeper
-            The app is not notarized, so macOS may block the first launch.
-            Drag the app to `/Applications`, then either:
+            ## Downloads
 
-            - right-click (or Control-click) the app, choose **Open**, and confirm
-              **Open** again, or
-            - clear the quarantine attribute in a terminal:
+            Every file is named `mikrotik-rif_<version>_<arch>.<ext>`, where
+            `<arch>` is `amd64` (64-bit Intel/AMD) or `arm64`:
 
-              ```bash
+            | Platform | Package |
+            | --- | --- |
+            | Windows | `-setup.exe` installer |
+            | macOS (Apple Silicon) | `.dmg` disk image (drag the app to Applications) |
+            | Debian / Ubuntu | `.deb` |
+            | Fedora / RHEL | `.rpm` |
+            | Linux (any distribution) | portable `.AppImage` |
+
+            ## Install
+
+            ```sh
+            # Debian / Ubuntu
+            sudo apt install ./mikrotik-rif_<version>_amd64.deb
+
+            # Fedora / RHEL
+            sudo dnf install ./mikrotik-rif_<version>_amd64.rpm
+
+            # AppImage (any Linux)
+            chmod +x mikrotik-rif_<version>_amd64.AppImage && ./mikrotik-rif_<version>_amd64.AppImage
+            ```
+
+            Replace `amd64` with `arm64` on 64-bit ARM machines. On Windows run the
+            `-setup.exe`; on macOS open the `.dmg` and drag the app into `/Applications`.
+
+            ## Verify the download
+
+            Every file is listed in `SHA256SUMS.txt`. From the folder holding the
+            downloads:
+
+            ```sh
+            sha256sum -c SHA256SUMS.txt
+            ```
+
+            ## First launch (these builds are not code-signed)
+
+            No Apple or Windows code-signing certificate is used, so each system
+            warns once the first time:
+
+            - **macOS** — Gatekeeper blocks the app: right-click it, choose **Open**,
+              then **Open** again. Or clear the quarantine flag:
+
+              ```sh
               xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"
               ```
 
-            ### Windows — SmartScreen
-            Installers are provided for x64 and arm64; the architecture is part of
-            the file name (`..._x64...` or `..._arm64...`). The installers are not
-            code-signed. If you see "Windows protected your PC", click
-            **More info**, then **Run anyway**.
-
-            ### Linux
-            Both x86_64 and arm64 packages are provided; the architecture is part
-            of the file name.
-
-            - Debian/Ubuntu: `sudo apt install ./mikrotik-rif_*_amd64.deb`
-              (x86_64) or `./mikrotik-rif_*_arm64.deb` (arm64)
-            - AppImage: `chmod +x mikrotik-rif_*_x86_64.AppImage && ./mikrotik-rif_*_x86_64.AppImage`
-              (x86_64) or `mikrotik-rif_*_aarch64.AppImage` (arm64)
-            - Fedora/RHEL: `sudo dnf install ./mikrotik-rif-*.x86_64.rpm`
-              (x86_64) or `./mikrotik-rif-*.aarch64.rpm` (arm64)
+            - **Windows** — SmartScreen shows "Windows protected your PC": choose
+              **More info**, then **Run anyway**.
           files: |
             dist/*
