@@ -21,6 +21,8 @@ pub enum Glyph {
     Close,
     /// A rectangle with a highlighted side column, for the module rail.
     PanelLeft,
+    /// A cog wheel, for the settings entry point.
+    Gear,
 }
 
 /// A small square icon button with an optional selected state.
@@ -34,6 +36,22 @@ pub fn icon_button(
     selected: bool,
     enabled: bool,
     hint: &str,
+) -> bool {
+    icon_button_ext(ui, palette, glyph, selected, enabled, hint, false)
+}
+
+/// [`icon_button`] with an optional notification dot in the top-right corner.
+///
+/// The dot marks state that lives behind the button (used by the settings gear
+/// when an update is available) without adding a permanent label.
+pub fn icon_button_ext(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    glyph: Glyph,
+    selected: bool,
+    enabled: bool,
+    hint: &str,
+    badge: bool,
 ) -> bool {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::splat(26.0),
@@ -66,6 +84,13 @@ pub fn icon_button(
         painter.rect_filled(rect, 7.0, background);
     }
     draw(painter, rect.center(), glyph, color, selected);
+
+    if badge && enabled {
+        let dot = rect.right_top() + Vec2::new(-4.0, 4.0);
+        // A panel-coloured ring separates the dot from the glyph underneath.
+        painter.circle_filled(dot, 4.5, palette.panel);
+        painter.circle_filled(dot, 3.0, palette.accent);
+    }
 
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -122,6 +147,23 @@ fn draw(painter: &Painter, center: Pos2, glyph: Glyph, color: Color32, selected:
                 ],
                 stroke,
             );
+        }
+        Glyph::Gear => {
+            let radius = 5.4;
+            painter.circle_stroke(center, radius, Stroke::new(1.5, color));
+            painter.circle_stroke(center, 2.0, Stroke::new(1.5, color));
+            for index in 0..8u8 {
+                let angle = std::f32::consts::TAU * (f32::from(index) / 8.0);
+                let (sin, cos) = angle.sin_cos();
+                let direction = Vec2::new(cos, sin);
+                painter.line_segment(
+                    [
+                        center + direction * (radius - 0.4),
+                        center + direction * (radius + 2.1),
+                    ],
+                    Stroke::new(1.5, color),
+                );
+            }
         }
     }
 }

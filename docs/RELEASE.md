@@ -103,6 +103,56 @@ open-the-`.dmg` flow: the project ships unsigned builds and will not
 self-replace the `/Applications` bundle, because Gatekeeper would treat every
 replaced bundle as a new app.
 
+### Conditional checks and optional signing
+
+The check sends `If-None-Match` with the ETag of the previous response
+(persisted as `update.etag`); an unchanged `releases/latest` answers `304`, and
+GitHub does not count those against the 60-requests-per-hour unauthenticated
+limit. This matters because the automatic check runs on every launch.
+
+Releases can additionally be signed with minisign. It is opt-in and off by
+default:
+
+- generate an **unencrypted** key pair with `minisign -G -W` (the `-W` is
+  required: CI cannot answer the interactive password prompt) and store the
+  contents of `minisign.key` in the `MINISIGN_SECRET_KEY` repository secret —
+  never commit or share it;
+- put the public key in the `MIKROTIK_RIF_MINISIGN_PUBKEY` repository
+  **variable** (not a secret). Either the whole `minisign.pub` file or just its
+  second line (the base64 key) works. `build.yml` bakes it into the binary; with
+  it embedded, the updater requires a valid `SHA256SUMS.txt.minisig` and refuses
+  any download that lacks one;
+- `release.yml` then signs `SHA256SUMS.txt` with `minisign -S -W` and uploads
+  the detached signature.
+
+Configure the variable and the secret **together**: a public key without a
+signing step makes every update fail closed, while a signing step without the
+public key is inert. The verification path is unit-tested against a minisign
+fixture; the CI signing branch has not been exercised on a real release.
+
+## Release integrity gates
+
+`release.yml` runs three checks around the publish job (`v*` tags only), so a
+release cannot publish assets that disagree with its tag or with its own
+checksums:
+
+- **Tag ↔ version**: `GITHUB_REF_NAME` must equal `v<version>` read from
+  `Cargo.toml`, because cargo-packager bakes that version into every normalised
+  asset name.
+- **Manifest ↔ files (pre-publish)**: `SHA256SUMS.txt` must list exactly the
+  files in `dist/`, and no name may contain whitespace — GitHub rewrites spaces
+  on upload, which is what broke the v0.2.0 `.dmg`
+  (`MikroTik RIF Viewer_0.2.0_aarch64.dmg` was published as
+  `MikroTik.RIF.Viewer_0.2.0_aarch64.dmg`, so `sha256sum -c` no longer matched).
+- **Manifest ↔ published assets (post-publish)**: `gh release view` re-reads the
+  real asset names. This runs after the release exists, so a failure there means
+  "fix the names", not "nothing was published".
+
+The updater in `src/update.rs` accepts asset downloads only from `github.com`,
+`api.github.com` and GitHub's object-store hosts (`objects...` and the current
+`release-assets.githubusercontent.com`); every redirect hop is re-validated, so
+a new host must be added there deliberately or downloads fail closed.
+
 ## Linux desktop integration
 
 Every Linux package installs a freedesktop entry, an icon and a shared-MIME
@@ -168,6 +218,38 @@ and `window-position` do not exist there). The background path is resolved
 relative to the repo root, where `cargo packager` runs in CI. The rendered
 window can only be eyeballed on a macOS run (see residual uncertainty).
 
+### Why CI-built `.dmg`s used to ship without the background
+
+The `v0.2.0` `.dmg` embedded the correct 660x400 PNG (verified by mounting the
+published image: `.background/dmg-background.png` was byte-identical to
+`assets/macos/dmg-background.png`), yet Finder opened a plain window. The cause
+was not a missing change — the config and the asset were both ancestors of the
+`v0.2.0` tag — but cargo-packager 0.11.8 itself:
+
+```rust
+// crates/packager/src/package/dmg/mod.rs
+if let Some(value) = std::env::var_os("CI") {
+    if value == "true" {
+        bundle_dmg_cmd.arg("--skip-jenkins");
+    }
+}
+```
+
+GitHub Actions exports `CI=true`, so the DMG was built with create-dmg's
+`--skip-jenkins`. That flag skips the Finder AppleScript that is the only thing
+which writes the mounted volume's `.DS_Store`; without it Finder has no record
+of the background or the icon layout. The image contains the PNG but no
+`.DS_Store`, so the wallpaper never appears.
+
+The packaging step in `build.yml` now overrides `CI` to `false` on macOS only
+(exact-string compare against `"true"` makes this reliable; Linux/Windows keep
+`CI=true` and their packaging paths never read it), and a following macOS-only
+step mounts the fresh `.dmg` and fails the build unless a root `.DS_Store`
+exists. `create-dmg`'s AppleScript waits on Finder without its own timeout, so
+the packaging step carries a 30-minute `timeout-minutes` bound. Rollback is
+deleting the `env:` override and the verification step; the `.dmg`s then lose
+the background again and the verification step fails.
+
 ## Windows file association
 
 The same table is rendered once per extension into the NSIS installer
@@ -210,14 +292,33 @@ attachments alone do not satisfy that, so:
   executable on Windows. On `.deb` this also duplicates them under
   `usr/lib/<binary>/licenses/`, which is harmless;
 - every GitHub Release attaches only the installers plus `SHA256SUMS.txt`. The
-  four texts above still travel *inside* every package (which is what the OFL
+  texts above still travel *inside* every package (which is what the OFL
   requires); they are just no longer attached as loose files on the release
   page.
 
-Still outstanding for full third-party compliance: the notices of the Rust
-dependencies (428 crates in `Cargo.lock`) and of egui's own default fonts
-(Hack, Noto Emoji, Ubuntu Light, emoji-icon-font), which remain in the binary
-because `FontDefinitions::default()` is used as the base.
+### Third-party notices and egui's default fonts
+
+`FontDefinitions::default()` means egui also embeds four fonts of its own
+(Hack, Noto Emoji, Ubuntu Light and emoji-icon-font). Their licence texts are
+vendored from the `epaint_default_fonts` crate into `assets/fonts/egui/`
+(`MIT-Hack.txt`, `OFL-NotoEmoji.txt`, `UFL-Ubuntu-Light.txt`,
+`MIT-emoji-icon-font.txt`) and ship alongside the app exactly like the bundled
+fonts.
+
+The notices of the Rust dependency graph (444 of the 473 `Cargo.lock`
+packages are reachable and compiled; the rest are feature/target-gated and
+never linked) are generated with `cargo-about` into `THIRD-PARTY-NOTICES.md`:
+
+```sh
+cargo install cargo-about --locked --version 0.9.2 --features cli
+cargo about generate about.hbs --output-file THIRD-PARTY-NOTICES.md --fail --frozen
+```
+
+`about.toml` keeps the accepted-licence list in sync with `deny.toml`, and the
+`deny` CI job regenerates the file and fails if it drifts from `Cargo.lock`.
+All eight texts (the four bundled-font licences, `LICENSE`, the four egui-font
+licences and `THIRD-PARTY-NOTICES.md`) travel inside `.deb`, `.rpm`,
+`.AppImage`, the `.app`/`.dmg` and the Windows installer.
 
 
 ## Verified prerequisites and their sources
@@ -255,8 +356,8 @@ the official CLI directly.
 2. Update the version in `Cargo.toml` (owned by the maintainer) and merge.
 3. Create and push an annotated tag:
    ```bash
-   git tag -a v0.2.0 -m "v0.2.0"
-   git push origin v0.2.0
+   git tag -a v0.3.0 -m "v0.3.0"
+   git push origin v0.3.0
    ```
 4. The Release workflow calls `build.yml`, computes `SHA256SUMS.txt` from the
    merged artifacts, and creates the GitHub Release with
@@ -334,7 +435,14 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   eyeballable on a mounted image from a macOS CI run: check that the window
   is 660x400, the background fills it without scaling artifacts, and the
   `.app` icon plus the `/Applications` symlink sit centred on the two rings
-  with the arrow between them.
+  with the arrow between them. The `CI=false` override is the only way to get
+  the background on a CI-built `.dmg`, and it re-enables create-dmg's Finder
+  AppleScript: GitHub-hosted macOS runners normally do have an Aqua session,
+  but if Finder never writes `.DS_Store` the packaging step hangs until its
+  30-minute `timeout-minutes` (bounded failure), and if `osascript` errors the
+  step fails in seconds. Both cases are caught by the `.DS_Store` verification
+  step before any artifact is uploaded; validate the pair with the
+  **Packaging smoke** workflow on a macOS runner before tagging.
 - File associations are only provable on real installers: NSIS registry writes
   (and the leftover `.rif` keys on uninstall, see above), macOS Launch Services
   registration of `CFBundleDocumentTypes` (a quarantined or relocated `.app`

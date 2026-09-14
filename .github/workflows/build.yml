@@ -122,6 +122,14 @@ jobs:
       # once here; every packager step below consumes these artifacts via
       # `cargo packager --release`.
       - name: Build release binary
+        env:
+          # Optional release-signing public key (minisign, base64). Set it as a
+          # repository *variable* (public keys are not secret): when present the
+          # built binary requires a valid `SHA256SUMS.txt.minisig` on every
+          # release, which release.yml produces from the MINISIGN_SECRET_KEY
+          # secret. Configure the variable and the secret together, or leave
+          # both unset; a lone variable makes updates fail closed.
+          MIKROTIK_RIF_MINISIGN_PUBKEY: ${{ vars.MIKROTIK_RIF_MINISIGN_PUBKEY }}
         run: cargo build --release --locked
 
       - name: Install cargo-packager
@@ -134,6 +142,38 @@ jobs:
       #   mikrotik-rif_<version>_<arch>.deb|.rpm|.AppImage|.dmg
       #   mikrotik-rif_<version>_<arch>-setup.exe
       - name: Package installers (cargo-packager)
+        # ROOT CAUSE (verified in cargo-packager 0.11.8 source,
+        # crates/packager/src/package/dmg/mod.rs):
+        #
+        #   if let Some(value) = std::env::var_os("CI") {
+        #       if value == "true" {
+        #           bundle_dmg_cmd.arg("--skip-jenkins");
+        #       }
+        #   }
+        #
+        # GitHub Actions exports CI=true, so the macOS .dmg was produced with
+        # create-dmg's `--skip-jenkins`. That flag skips the Finder AppleScript
+        # which is the only thing that writes the volume's .DS_Store. Finder
+        # uses .DS_Store to know the icon layout and the window background, so
+        # without it the `[package.metadata.packager.dmg] background` PNG is
+        # embedded in the .dmg but never shown (the "no wallpaper" bug).
+        #
+        # FIX: force CI=false for this step ONLY on macOS. The check above is
+        # an exact string compare against "true", so "false" reliably suppresses
+        # `--skip-jenkins`. Linux and Windows keep CI=true: their packaging
+        # paths (NSIS, .deb, AppImage) never read CI, so nothing changes there.
+        #
+        # ROLLBACK: delete this `env:` block (or revert this step). CI then
+        # stays "true" on macOS again and create-dmg runs with `--skip-jenkins`:
+        # the .dmgs lose the background and the .DS_Store verification step
+        # below will fail the build.
+        env:
+          CI: ${{ runner.os == 'macOS' && 'false' || 'true' }}
+        # create-dmg's Finder AppleScript (now enabled on macOS) has no timeout
+        # of its own and waits on Finder to write .DS_Store. Bound the step so a
+        # headless runner that never writes it fails in 30 minutes instead of
+        # burning the job's 360-minute default.
+        timeout-minutes: 30
         run: cargo packager --release --formats ${{ matrix.formats }}
 
       # RPM is intentionally not part of cargo-packager (its PackageFormat enum
@@ -147,6 +187,57 @@ jobs:
       - name: Generate .rpm package (cargo-generate-rpm)
         if: runner.os == 'Linux'
         run: cargo generate-rpm --output dist
+
+      # Self-verification of the macOS background fix above. create-dmg writes
+      # the volume's .DS_Store only when its Finder AppleScript runs (i.e. when
+      # `--skip-jenkins` is absent). Mount the freshly built .dmg read-only and
+      # fail if .DS_Store is missing at the volume root, so a silent regression
+      # (the CI override being dropped, the AppleScript being skipped, or the
+      # background being changed) breaks the build instead of shipping a plain
+      # .dmg. macOS only: only the .dmg has a Finder background.
+      - name: Verify .dmg volume background (.DS_Store)
+        if: runner.os == 'macOS'
+        shell: bash
+        # Bound hdiutil in case mounting the image ever stalls; the image is
+        # ~17 MB, so 10 minutes is far beyond any healthy mount.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          dmg=""
+          for candidate in dist/*.dmg; do
+            [ -f "${candidate}" ] || continue
+            dmg="${candidate}"
+            break
+          done
+          if [ -z "${dmg}" ]; then
+            echo "ERROR: no .dmg found in dist/ to verify on macOS" >&2
+            exit 1
+          fi
+          echo "Verifying '${dmg}' contains a root .DS_Store"
+          mountpoint="$(mktemp -d "${RUNNER_TEMP:-/tmp}/rifmnt.XXXXXX")"
+          # Always detach, even when the check below fails: a leftover mount
+          # would keep the image busy and can break later steps. --force is the
+          # last resort; the mount is read-only so detaching is safe.
+          # ROLLBACK for this step: delete it (and the env override above).
+          cleanup() {
+            hdiutil detach "${mountpoint}" -quiet \
+              || hdiutil detach "${mountpoint}" -force -quiet \
+              || true
+            rmdir "${mountpoint}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          # -nobrowse stops Finder auto-opening the volume; -readonly makes sure
+          # the image is never mutated by this check.
+          hdiutil attach "${dmg}" -nobrowse -readonly -mountpoint "${mountpoint}"
+          if [ ! -f "${mountpoint}/.DS_Store" ]; then
+            echo "ERROR: '${dmg}' has no .DS_Store at the volume root, so Finder" >&2
+            echo "ERROR: will not apply the custom background. Most likely the" >&2
+            echo "ERROR: cargo-packager step passed --skip-jenkins because CI was" >&2
+            echo "ERROR: 'true'; check the CI override on that step." >&2
+            exit 1
+          fi
+          ls -la "${mountpoint}/.DS_Store"
+          echo "OK: '${dmg}' contains a root .DS_Store; DMG background is set."
 
       # Rename every artifact to the single release scheme, with the
       # architecture token in {amd64, arm64}:

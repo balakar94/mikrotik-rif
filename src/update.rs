@@ -4,9 +4,12 @@
 //! module owns the only exception: a poll of the GitHub Releases API plus the
 //! download of a release installer. The rules are:
 //!
-//! * Automatic checks run at most once a day, on a background [`std::thread`]
-//!   spawned at startup, and never block the interface thread.
+//! * When enabled, an automatic check runs on every launch, on a background
+//!   [`std::thread`], and never blocks the interface thread.
 //! * The user can disable automatic checks and can always trigger a manual one.
+//!   A manual check ignores a previously skipped release, so "Skip this
+//!   version" keeps the automatic checks quiet while Settings can still
+//!   surface the update on demand.
 //! * Nothing is ever executed without a verified SHA-256 checksum.
 //! * There is no telemetry and no context menu. A fully silent install exists
 //!   on Windows (installer launch) and for Linux AppImages (in-place replace
@@ -87,16 +90,9 @@
 //! key per error kind in all seven locales. Localization stops at the states;
 //! errors stay technical and actionable.
 
-use std::io::Read as _;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-// Only the Linux self-replace path touches Unix permission bits; gating this
-// to `unix` would leave it unused (and CI's `-D warnings` would fail) on
-// macOS, where that path is not compiled.
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::PermissionsExt as _;
 
 use sha2::{Digest as _, Sha256};
 
@@ -108,26 +104,41 @@ pub const UPDATE_OWNER: &str = "balakar94";
 ///
 /// Centralized here; see the module documentation for why.
 pub const UPDATE_REPO: &str = "mikrotik-rif";
-/// Minimum seconds between two automatic update checks (one day).
-pub const AUTO_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// Checksum file attached to every release by the release workflow.
 pub const CHECKSUMS_FILE_NAME: &str = "SHA256SUMS.txt";
+/// Detached minisign signature attached to the checksums file when the release
+/// was signed (`SHA256SUMS.txt.minisig`).
+pub const SIGNATURE_FILE_NAME: &str = "SHA256SUMS.txt.minisig";
+/// Public key embedded at build time (`MIKROTIK_RIF_MINISIGN_PUBKEY`), or empty
+/// when release signing is not configured.
+pub const MINISIGN_PUBLIC_KEY: &str = env!("MIKROTIK_RIF_MINISIGN_PUBKEY");
 /// Longest release-notes excerpt shown in the update banner, in characters.
 pub const MAX_NOTES_CHARS: usize = 280;
+/// `Accept` header sent to the GitHub API.
+const ACCEPT_JSON: &str = "application/vnd.github+json";
+/// Prefix every published release artifact shares; used to anchor asset
+/// matching so an unrelated attachment cannot be mistaken for an installer.
+const ASSET_PREFIX: &str = "mikrotik-rif_";
 /// Network timeout for the small release-metadata request.
 const METADATA_TIMEOUT: Duration = Duration::from_secs(25);
 /// Network timeout for installer downloads (large files on slow links).
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// Streaming buffer used while writing a download to disk.
 const CHUNK_LEN: usize = 64 * 1024;
-/// Hosts allowed for update traffic. Release assets redirect to
-/// `objects.githubusercontent.com`; every URL (initial and per redirect hop)
+/// Hosts allowed for update traffic. Every URL (initial and per redirect hop)
 /// must land on one of these, so a compromised API response cannot point the
 /// downloader at an arbitrary host.
-const ALLOWED_HOSTS: [&str; 3] = [
+///
+/// GitHub serves release assets through its object store and has migrated the
+/// redirect target: `objects.githubusercontent.com` was the historical host,
+/// while `release-assets.githubusercontent.com` is what the current edge
+/// returns. Both are kept because the host a given client is redirected to
+/// depends on GitHub's edge and can change over time.
+const ALLOWED_HOSTS: [&str; 4] = [
     "github.com",
     "api.github.com",
     "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
 ];
 /// Redirect hops followed manually; each hop is re-validated by [`check_url`].
 const MAX_REDIRECTS: usize = 3;
@@ -163,6 +174,9 @@ pub enum UpdateError {
     /// [`CHECKSUMS_FILE_NAME`] has no entry for the downloaded file.
     #[error("no checksum entry for {0}")]
     MissingChecksum(String),
+    /// Signing is configured but the release carries no signature file.
+    #[error("release is missing {0}")]
+    MissingSignature(String),
     /// The downloaded bytes do not match [`CHECKSUMS_FILE_NAME`].
     ///
     /// The file is deleted before this error is reported, and nothing is
@@ -216,9 +230,20 @@ impl ReleaseInfo {
 #[derive(Debug)]
 pub enum CheckOutcome {
     /// The release tag is newer than the running app.
-    Available(Box<ReleaseInfo>),
+    Available {
+        /// The newer release.
+        release: Box<ReleaseInfo>,
+        /// ETag to send back as `If-None-Match` on the next check.
+        etag: Option<String>,
+    },
     /// The running app is up to date (or the tag could not be compared).
-    UpToDate,
+    UpToDate {
+        /// ETag to send back as `If-None-Match` on the next check.
+        etag: Option<String>,
+    },
+    /// The endpoint answered `304 Not Modified`: nothing changed since the last
+    /// check, so whatever the previous outcome was still holds.
+    NotModified,
     /// The check failed; the string is already user-readable.
     Failed(String),
 }
@@ -273,6 +298,24 @@ pub fn user_agent() -> String {
 #[must_use]
 pub fn latest_release_url() -> String {
     format!("https://api.github.com/repos/{UPDATE_OWNER}/{UPDATE_REPO}/releases/latest")
+}
+
+/// Web URL of the project's repository (About screen).
+#[must_use]
+pub fn repository_url() -> String {
+    format!("https://github.com/{UPDATE_OWNER}/{UPDATE_REPO}")
+}
+
+/// Web URL of the releases page (browser fallback when no asset matches).
+#[must_use]
+pub fn releases_page_url() -> String {
+    format!("{}/releases", repository_url())
+}
+
+/// Web URL of the licence file in the repository (About screen).
+#[must_use]
+pub fn license_url() -> String {
+    format!("{}/blob/main/LICENSE", repository_url())
 }
 
 /// Validate an update URL before any request is made to it.
@@ -351,23 +394,14 @@ pub fn now_unix() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// Whether an automatic check may run now (at most once a day).
+/// Whether an automatic check may run now.
 ///
-/// Pure so the scheduling rule is unit-testable: the "once a day" budget must
-/// hold even if the process restarts often.
+/// The check runs once per launch while the user keeps it enabled: there is no
+/// time-based budget, so starting the app always asks GitHub for the latest
+/// release. Pure so the rule is unit-testable.
 #[must_use]
-pub const fn should_auto_check(
-    enabled: bool,
-    last_check_unix: Option<u64>,
-    now_unix_secs: u64,
-) -> bool {
-    if !enabled {
-        return false;
-    }
-    match last_check_unix {
-        None => true,
-        Some(last) => now_unix_secs.saturating_sub(last) >= AUTO_CHECK_INTERVAL_SECS,
-    }
+pub const fn should_auto_check(enabled: bool) -> bool {
+    enabled
 }
 
 /// Parse a release tag of the form `vX.Y.Z` (the `v` prefix is optional).
@@ -431,7 +465,11 @@ pub fn select_asset<'a>(assets: &'a [AssetInfo], os: &str, arch: &str) -> Option
     let marker = format!("_{token}");
     match (os, token) {
         ("windows", _) => assets.iter().find(|asset| is_setup(asset, &marker)),
-        ("macos", "arm64") => assets.iter().find(|asset| asset.name.ends_with(".dmg")),
+        // Only Apple Silicon is shipped; requiring the `_arm64` marker keeps an
+        // accidental extra `.dmg` (say an Intel one) from being picked by order.
+        ("macos", "arm64") => assets.iter().find(|asset| {
+            is_release_asset(asset) && asset.name.ends_with(&format!("{marker}.dmg"))
+        }),
         ("linux", _) => select_linux(assets, &marker),
         _ => None,
     }
@@ -466,7 +504,17 @@ pub fn select_asset_for_current(assets: &[AssetInfo]) -> Option<&AssetInfo> {
     reason = "asset names are byte-exact CI artifacts; case-insensitive matching would widen the contract"
 )]
 fn is_setup(asset: &AssetInfo, arch_marker: &str) -> bool {
-    asset.name.ends_with("-setup.exe") && asset.name.contains(arch_marker)
+    is_release_asset(asset)
+        && asset.name.ends_with("-setup.exe")
+        && asset.name.contains(arch_marker)
+}
+
+/// Whether an asset name is one of this project's published release artifacts.
+///
+/// Anchoring on the shared prefix keeps unrelated attachments (checksums,
+/// signatures, notes) from ever matching an installer rule.
+fn is_release_asset(asset: &AssetInfo) -> bool {
+    asset.name.starts_with(ASSET_PREFIX)
 }
 
 /// Linux preference order: native `.deb`, then `.rpm`, then `.AppImage`.
@@ -479,11 +527,15 @@ fn is_setup(asset: &AssetInfo, arch_marker: &str) -> bool {
 fn select_linux<'a>(assets: &'a [AssetInfo], marker: &str) -> Option<&'a AssetInfo> {
     assets
         .iter()
-        .find(|asset| asset.name.ends_with(".deb") && asset.name.contains(marker))
+        .find(|asset| {
+            is_release_asset(asset) && asset.name.ends_with(".deb") && asset.name.contains(marker)
+        })
         .or_else(|| {
-            assets
-                .iter()
-                .find(|asset| asset.name.ends_with(".rpm") && asset.name.contains(marker))
+            assets.iter().find(|asset| {
+                is_release_asset(asset)
+                    && asset.name.ends_with(".rpm")
+                    && asset.name.contains(marker)
+            })
         })
         .or_else(|| find_appimage(assets, marker))
 }
@@ -495,9 +547,9 @@ fn select_linux<'a>(assets: &'a [AssetInfo], marker: &str) -> Option<&'a AssetIn
     reason = "asset names are byte-exact CI artifacts; case-insensitive matching would widen the contract"
 )]
 fn find_appimage<'a>(assets: &'a [AssetInfo], marker: &str) -> Option<&'a AssetInfo> {
-    assets
-        .iter()
-        .find(|asset| asset.name.ends_with(".AppImage") && asset.name.contains(marker))
+    assets.iter().find(|asset| {
+        is_release_asset(asset) && asset.name.ends_with(".AppImage") && asset.name.contains(marker)
+    })
 }
 
 /// Download URL of the release's [`CHECKSUMS_FILE_NAME`], if attached.
@@ -508,6 +560,40 @@ pub fn checksums_url(release: &ReleaseInfo) -> Option<String> {
         .iter()
         .find(|asset| asset.name == CHECKSUMS_FILE_NAME)
         .map(|asset| asset.url.clone())
+}
+
+/// Download URL of the release's detached minisign signature, if attached.
+#[must_use]
+pub fn signature_url(release: &ReleaseInfo) -> Option<String> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == SIGNATURE_FILE_NAME)
+        .map(|asset| asset.url.clone())
+}
+
+/// Verify a minisign signature over `data` with a base64 public key.
+///
+/// # Errors
+///
+/// Returns [`UpdateError::Response`] when the key or the signature cannot be
+/// parsed, or when the signature does not match.
+pub fn verify_minisign(
+    data: &[u8],
+    signature_text: &str,
+    public_key_base64: &str,
+) -> Result<(), UpdateError> {
+    // Accept either the bare base64 key (the `.pub` file's second line) or the
+    // whole `.pub` file, so pasting the file into the repository variable
+    // works too.
+    let key_text = public_key_base64.trim();
+    let key = minisign_verify::PublicKey::from_base64(key_text)
+        .or_else(|_| minisign_verify::PublicKey::decode(key_text))
+        .map_err(|error| UpdateError::Response(format!("invalid signing key: {error}")))?;
+    let signature = minisign_verify::Signature::decode(signature_text)
+        .map_err(|error| UpdateError::Response(format!("invalid signature: {error}")))?;
+    key.verify(data, &signature, false)
+        .map_err(|error| UpdateError::Response(format!("signature check failed: {error}")))
 }
 
 /// Extract the expected SHA-256 hex digest for `asset_name` from a
@@ -590,234 +676,7 @@ pub fn summarize_notes(notes: &str) -> String {
     }
 }
 
-/// Query the `releases/latest` endpoint (blocking; call off the UI thread).
-///
-/// # Errors
-///
-/// Returns [`UpdateError::Network`] when the request fails and
-/// [`UpdateError::Response`] when the body is not a recognizable release.
-pub fn fetch_latest() -> Result<ReleaseInfo, UpdateError> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(METADATA_TIMEOUT))
-        .max_redirects(0)
-        .build()
-        .into();
-    let mut response = get_following_redirects(&agent, &latest_release_url())?;
-    let release: ReleaseInfo = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_METADATA_BYTES)
-        .read_json()
-        .map_err(|error| UpdateError::Response(error.to_string()))?;
-    validate_release(&release)?;
-    Ok(release)
-}
-
-/// Perform a `GET`, following at most [`MAX_REDIRECTS`] redirects manually so
-/// that every hop is validated by [`check_url`].
-///
-/// `ureq`'s automatic following is turned off (`.max_redirects(0)`): it would
-/// follow a `Location` header to any host, which is precisely what the
-/// validation must prevent. GitHub release assets legitimately redirect to
-/// `objects.githubusercontent.com`, so a fixed number of hops is still
-/// permitted — just never off the allow-list.
-fn get_following_redirects(
-    agent: &ureq::Agent,
-    start_url: &str,
-) -> Result<ureq::http::Response<ureq::Body>, UpdateError> {
-    let mut url = start_url.to_owned();
-    for _ in 0..=MAX_REDIRECTS {
-        check_url(&url)?;
-        let response = agent
-            .get(url.clone())
-            .header("User-Agent", user_agent())
-            .header("Accept", "application/vnd.github+json")
-            .call()
-            .map_err(|error| UpdateError::Network(error.to_string()))?;
-        if !response.status().is_redirection() {
-            return Ok(response);
-        }
-        url = response
-            .headers()
-            .get("location")
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| UpdateError::InvalidUrl(url.clone()))?;
-    }
-    Err(UpdateError::InvalidUrl(format!(
-        "too many redirects from {start_url}"
-    )))
-}
-
-/// Check for updates on a background thread; the single message arrives on
-/// the returned channel. Never blocks the caller.
-#[must_use]
-pub fn spawn_check(current_version: String) -> Receiver<CheckOutcome> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let outcome = match fetch_latest() {
-            Ok(release) if is_update(&current_version, &release.tag) => {
-                CheckOutcome::Available(Box::new(release))
-            }
-            Ok(_) => CheckOutcome::UpToDate,
-            Err(error) => CheckOutcome::Failed(error.to_string()),
-        };
-        let _ = sender.send(outcome);
-    });
-    receiver
-}
-
-/// Directory downloads are saved to: `~/Downloads` when it exists, otherwise
-/// the system temporary directory. Windows always uses the temporary
-/// directory because the installer is a throwaway launcher, not a keepsake.
-#[must_use]
-pub fn download_dir() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        return std::env::temp_dir();
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let downloads = PathBuf::from(home).join("Downloads");
-        if downloads.is_dir() {
-            return downloads;
-        }
-    }
-    std::env::temp_dir()
-}
-
-/// Destination path for an asset: [`download_dir`] plus the asset's file
-/// name. Any directory components in a hostile asset name are stripped.
-#[must_use]
-pub fn asset_dest(asset_name: &str) -> PathBuf {
-    let file_name = Path::new(asset_name)
-        .file_name()
-        .map_or("mikrotik-rif-update.bin", |name| {
-            name.to_str().unwrap_or("mikrotik-rif-update.bin")
-        });
-    download_dir().join(file_name)
-}
-
-/// Download `asset` with progress events, then verify it against the
-/// checksum file at `checksums_url`, all on a background thread.
-///
-/// The file is streamed straight to `dest` (never fully buffered in memory).
-/// When verification fails — or the checksum entry is missing — the file is
-/// deleted and [`DownloadOutcome::Failed`] is sent; [`DownloadOutcome::Done`]
-/// is only sent for a verified file.
-///
-/// An empty `checksums_url` is treated as a missing checksum entry: without
-/// a checksum there is nothing to verify against, so nothing is kept.
-#[must_use]
-pub fn spawn_download(
-    asset: AssetInfo,
-    checksums_url: String,
-    dest: PathBuf,
-) -> Receiver<DownloadOutcome> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let outcome = download_verified(&asset, &checksums_url, &dest, &|done, total| {
-            let _ = sender.send(DownloadOutcome::Progress { done, total });
-        });
-        let _ = sender.send(outcome);
-    });
-    receiver
-}
-
-/// Blocking download plus verification; see [`spawn_download`].
-fn download_verified(
-    asset: &AssetInfo,
-    checksums_url: &str,
-    dest: &Path,
-    progress: &dyn Fn(u64, Option<u64>),
-) -> DownloadOutcome {
-    if let Err(error) = download_file(&asset.url, dest, progress) {
-        let _ = std::fs::remove_file(dest);
-        return DownloadOutcome::Failed(error.to_string());
-    }
-    let sums = match fetch_text(checksums_url) {
-        Ok(sums) => sums,
-        Err(error) => {
-            let _ = std::fs::remove_file(dest);
-            return DownloadOutcome::Failed(error.to_string());
-        }
-    };
-    verify_against_sums(&sums, &asset.name, dest)
-}
-
-/// Stream `url` to `dest`, reporting `(bytes_written, advertised_total)`.
-///
-/// The body is bounded by [`MAX_INSTALLER_BYTES`], both from the advertised
-/// `Content-Length` and while streaming, so a hostile or broken endpoint
-/// cannot fill the disk.
-fn download_file(
-    url: &str,
-    dest: &Path,
-    progress: &dyn Fn(u64, Option<u64>),
-) -> Result<(), UpdateError> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(DOWNLOAD_TIMEOUT))
-        .max_redirects(0)
-        .build()
-        .into();
-    let mut response = get_following_redirects(&agent, url)?;
-    let total = response
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    if total.is_some_and(|total| total > MAX_INSTALLER_BYTES) {
-        return Err(too_large());
-    }
-    let mut reader = response.body_mut().as_reader();
-    let mut file =
-        std::fs::File::create(dest).map_err(|error| UpdateError::Io(error.to_string()))?;
-    let mut chunk = vec![0_u8; CHUNK_LEN].into_boxed_slice();
-    let mut done: u64 = 0;
-    loop {
-        let read = reader
-            .read(&mut chunk)
-            .map_err(|error| UpdateError::Network(error.to_string()))?;
-        if read == 0 {
-            break;
-        }
-        done += u64::try_from(read).unwrap_or(u64::MAX);
-        if done > MAX_INSTALLER_BYTES {
-            return Err(too_large());
-        }
-        std::io::Write::write_all(&mut file, &chunk[..read])
-            .map_err(|error| UpdateError::Io(error.to_string()))?;
-        progress(done, total);
-    }
-    Ok(())
-}
-
-/// Error for a download that exceeds [`MAX_INSTALLER_BYTES`].
-fn too_large() -> UpdateError {
-    UpdateError::Response(format!(
-        "installer larger than {} MiB",
-        MAX_INSTALLER_BYTES / (1024 * 1024)
-    ))
-}
-
-/// Fetch a small text body (used for [`CHECKSUMS_FILE_NAME`]), bounded by
-/// [`MAX_CHECKSUMS_BYTES`] and validated like every other update URL.
-fn fetch_text(url: &str) -> Result<String, UpdateError> {
-    if url.is_empty() {
-        return Err(UpdateError::MissingChecksum(CHECKSUMS_FILE_NAME.to_owned()));
-    }
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(METADATA_TIMEOUT))
-        .max_redirects(0)
-        .build()
-        .into();
-    let mut response = get_following_redirects(&agent, url)?;
-    response
-        .body_mut()
-        .with_config()
-        .limit(MAX_CHECKSUMS_BYTES)
-        .read_to_string()
-        .map_err(|error| UpdateError::Response(error.to_string()))
-}
-
+/// One HTTP response, reduced to the fields the updater needs.
 /// Compare the file at `dest` against `sums`; delete it on any mismatch.
 fn verify_against_sums(sums: &str, asset_name: &str, dest: &Path) -> DownloadOutcome {
     let Some(expected) = find_checksum(sums, asset_name) else {
@@ -842,741 +701,12 @@ fn verify_against_sums(sums: &str, asset_name: &str, dest: &Path) -> DownloadOut
     }
 }
 
-/// Re-hash `path` and compare it with the digest captured at download time.
-///
-/// The file exists between verification and use, and a local process with
-/// write access to the download directory could swap it in that window. The
-/// file is deleted on a mismatch so nothing unverified can be launched.
-fn reverify(path: &Path, expected_hex: &str) -> Result<(), UpdateError> {
-    match hash_file(path) {
-        Ok(actual) if digests_match(&actual, expected_hex) => Ok(()),
-        Ok(_) => {
-            let _ = std::fs::remove_file(path);
-            Err(UpdateError::HashMismatch(
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("update")
-                    .to_owned(),
-            ))
-        }
-        Err(error) => Err(UpdateError::Io(error.to_string())),
-    }
-}
-
-/// Path of the AppImage this process runs from, if any.
-///
-/// The AppImage runtime exports `$APPIMAGE` with the image's own path; that
-/// variable is the documented way to locate the running file. Only meaningful
-/// on Linux, so anything else reports `None` without reading the environment.
-#[must_use]
-pub fn running_appimage() -> Option<PathBuf> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    running_appimage_from(std::env::var_os("APPIMAGE"))
-}
-
-/// [`running_appimage`] over an explicit value, so the rule is unit-testable
-/// without touching the process environment.
-#[must_use]
-pub fn running_appimage_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let path = PathBuf::from(value?);
-    if path.as_os_str().is_empty() {
-        None
-    } else {
-        Some(path)
-    }
-}
-
-/// Replace the running AppImage with a verified download and relaunch it.
-///
-/// `expected_hex` is the digest the download was verified against; it is
-/// checked again here, immediately before the copy, so a file swapped on disk
-/// after the download is refused. Replacement is a copy to a `<name>.update`
-/// sibling plus an atomic rename in the same directory, so a crash can never
-/// leave a half-written executable behind; the staging file is removed on any
-/// error. The current process keeps running the old bytes — the caller should
-/// exit right after, which the relaunched child (spawned with the same
-/// arguments) makes seamless.
-///
-/// # Errors
-///
-/// Returns [`UpdateError::Io`] when the copy, rename, permission change, or
-/// relaunch fails, and [`UpdateError::HashMismatch`] if the verified file no
-/// longer matches. The running image is left untouched unless the final rename
-/// succeeded.
-#[cfg(target_os = "linux")]
-pub fn replace_running_appimage(
-    verified_new: &Path,
-    expected_hex: &str,
-) -> Result<HandoffAction, UpdateError> {
-    let Some(current) = running_appimage() else {
-        return Err(UpdateError::Io("not running from an AppImage".to_owned()));
-    };
-    // `$APPIMAGE` comes from the process environment, so it is treated as
-    // untrusted input: only a regular file may become the replacement target.
-    check_appimage_target(&current)?;
-    if same_file(&current, verified_new) {
-        relaunch(&current)?;
-        return Ok(HandoffAction::AppImageReplaced);
-    }
-    reverify(verified_new, expected_hex)?;
-    install_appimage_file(&current, verified_new)?;
-    relaunch(&current)?;
-    Ok(HandoffAction::AppImageReplaced)
-}
-
-/// Whether `verified` should replace the running AppImage instead of going
-/// through the desktop handler.
-///
-/// Returns `None` when self-replace does not apply (not Linux, not running
-/// from an AppImage, or the verified file is not an `.AppImage`); the caller
-/// then falls back to [`perform_handoff`]. A `Some` value always ends the
-/// story: success means the replacement was relaunched and the caller should
-/// exit, failure means the running image is untouched and the error should be
-/// shown.
-#[cfg(target_os = "linux")]
-#[allow(
-    clippy::case_sensitive_file_extension_comparisons,
-    reason = "asset names are byte-exact CI artifacts; case-insensitive matching would widen the contract"
-)]
-pub fn maybe_self_replace(
-    verified: &Path,
-    expected_hex: &str,
-) -> Option<Result<HandoffAction, UpdateError>> {
-    running_appimage()?;
-    let name = verified.file_name()?.to_str()?;
-    if !name.ends_with(".AppImage") {
-        return None;
-    }
-    Some(replace_running_appimage(verified, expected_hex))
-}
-
-/// Install `new_file` over `current` via a staging sibling plus atomic rename.
-///
-/// Both paths must be distinct (see [`same_file`]); the staging file lives
-/// next to `current` so the rename never crosses filesystems.
-#[cfg(target_os = "linux")]
-fn install_appimage_file(current: &Path, new_file: &Path) -> Result<(), UpdateError> {
-    let staging_name = match current.file_name().and_then(|name| name.to_str()) {
-        Some(name) => format!("{name}.update"),
-        None => {
-            return Err(UpdateError::Io(
-                "cannot stage beside the AppImage".to_owned(),
-            ));
-        }
-    };
-    let staging = current.with_file_name(staging_name);
-    let failed = |reason: String| {
-        let _ = std::fs::remove_file(&staging);
-        UpdateError::Io(reason)
-    };
-    if let Err(error) = std::fs::copy(new_file, &staging) {
-        return Err(failed(error.to_string()));
-    }
-    #[cfg(unix)]
-    if let Err(error) = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)) {
-        return Err(failed(error.to_string()));
-    }
-    if let Err(error) = std::fs::rename(&staging, current) {
-        return Err(failed(error.to_string()));
-    }
-    Ok(())
-}
-
-/// Reject an `$APPIMAGE` value that is not a regular file.
-///
-/// The variable is attacker-influenced when the launcher's environment is, so
-/// a directory, symlink chain to nowhere, or missing path must never become
-/// the overwrite target. Pure over its argument, so it is unit-testable
-/// without touching the process environment.
-#[cfg(target_os = "linux")]
-fn check_appimage_target(current: &Path) -> Result<(), UpdateError> {
-    if current.is_file() {
-        Ok(())
-    } else {
-        Err(UpdateError::Io(
-            "the running AppImage is not a regular file".to_owned(),
-        ))
-    }
-}
-
-/// Whether both paths point at the same file (handles symlinks and relative
-/// spellings); conservative — any I/O error reports "different".
-#[cfg(target_os = "linux")]
-fn same_file(left: &Path, right: &Path) -> bool {
-    match (left.canonicalize(), right.canonicalize()) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
-/// Spawn `path` with this process's arguments (minus argv[0]) and return
-/// immediately; the child re-execs through the AppImage runtime on its own.
-#[cfg(target_os = "linux")]
-fn relaunch(path: &Path) -> Result<(), UpdateError> {
-    std::process::Command::new(path)
-        .args(std::env::args_os().skip(1))
-        .spawn()
-        .map_err(|error| UpdateError::Io(error.to_string()))?;
-    Ok(())
-}
-
-/// Hand a verified installer to the operating system (never runs it here
-/// beyond what the OS handler itself does; see the module documentation).
-///
-/// * Windows launches the `-setup.exe` as a detached child process; the
-///   caller should close the app afterwards so the installer can replace it.
-/// * macOS and Linux open the file with the desktop handler (`open` /
-///   `xdg-open` via the [`open`] crate) so the user finishes the install.
-///
-/// `expected_hex` is re-checked immediately before the launch/open, closing
-/// the window between download verification and use.
-///
-/// # Errors
-///
-/// Returns [`UpdateError::Io`] when the launch or open request fails, and
-/// [`UpdateError::HashMismatch`] if the file no longer matches its digest.
-pub fn perform_handoff(path: &Path, expected_hex: &str) -> Result<HandoffAction, UpdateError> {
-    reverify(path, expected_hex)?;
-    if cfg!(target_os = "windows") {
-        std::process::Command::new(path)
-            .spawn()
-            .map_err(|error| UpdateError::Io(error.to_string()))?;
-        Ok(HandoffAction::InstallerLaunched)
-    } else {
-        open::that(path).map_err(|error| UpdateError::Io(error.to_string()))?;
-        Ok(HandoffAction::PackageOpened)
-    }
-}
-
-/// Open the release page in the browser (fallback when no asset matches the
-/// current platform). The URL is validated first: it comes from the API JSON.
-///
-/// # Errors
-///
-/// Returns [`UpdateError::InvalidUrl`] for a non-GitHub URL and
-/// [`UpdateError::Io`] when no browser could be launched.
-pub fn open_release_page(page_url: &str) -> Result<(), UpdateError> {
-    check_url(page_url)?;
-    open::that(page_url).map_err(|error| UpdateError::Io(error.to_string()))
-}
-
+mod handoff;
+mod net;
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    fn asset(name: &str) -> AssetInfo {
-        AssetInfo {
-            name: name.to_owned(),
-            url: format!("https://example.com/{name}"),
-        }
-    }
-
-    fn realistic_assets() -> Vec<AssetInfo> {
-        vec![
-            asset("mikrotik-rif_0.2.0_amd64-setup.exe"),
-            asset("mikrotik-rif_0.2.0_arm64-setup.exe"),
-            asset("mikrotik-rif_0.2.0_arm64.dmg"),
-            asset("mikrotik-rif_0.2.0_amd64.deb"),
-            asset("mikrotik-rif_0.2.0_arm64.deb"),
-            asset("mikrotik-rif_0.2.0_amd64.rpm"),
-            asset("mikrotik-rif_0.2.0_arm64.rpm"),
-            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
-            asset("mikrotik-rif_0.2.0_arm64.AppImage"),
-            asset("SHA256SUMS.txt"),
-        ]
-    }
-
-    #[test]
-    fn endpoint_uses_the_central_coordinates() {
-        let url = latest_release_url();
-        assert!(url.contains(UPDATE_OWNER), "owner missing in {url}");
-        assert!(url.contains(UPDATE_REPO), "repo missing in {url}");
-        assert!(
-            url.ends_with("/releases/latest"),
-            "unexpected endpoint {url}"
-        );
-    }
-
-    #[test]
-    fn user_agent_identifies_the_app() {
-        let agent = user_agent();
-        assert!(
-            agent.starts_with("mikrotik-rif/"),
-            "unexpected agent {agent}"
-        );
-        assert!(agent.contains(env!("CARGO_PKG_VERSION")));
-    }
-
-    #[test]
-    fn tag_parsing_accepts_an_optional_v_prefix() {
-        assert_eq!(
-            parse_tag("v1.2.3"),
-            Some(semver::Version::new(1, 2, 3)),
-            "v prefix"
-        );
-        assert_eq!(
-            parse_tag("1.2.3"),
-            Some(semver::Version::new(1, 2, 3)),
-            "bare version"
-        );
-        assert!(parse_tag("not-a-version").is_none());
-        assert!(parse_tag("v1.2").is_none(), "partial versions are rejected");
-        assert!(parse_tag("").is_none());
-    }
-
-    #[test]
-    fn newer_stable_tags_are_updates() {
-        assert!(is_update("0.1.0", "v0.2.0"));
-        assert!(is_update("0.1.0", "1.0.0"));
-        assert!(!is_update("0.2.0", "v0.2.0"), "equal is not newer");
-        assert!(!is_update("0.3.0", "v0.2.0"), "older is not newer");
-        assert!(!is_update("0.1.0", "garbage"));
-        assert!(!is_update("garbage", "v9.9.9"), "bad current never updates");
-    }
-
-    #[test]
-    fn pre_release_tags_are_ignored() {
-        // `releases/latest` never points at a pre-release; this guards the
-        // comparison itself so a hand-crafted tag cannot sneak one through.
-        assert!(!is_update("0.1.0", "v9.9.9-beta.1"));
-        assert!(!is_update("0.1.0", "v0.2.0-rc.1"));
-        assert!(!is_update("1.2.2", "v1.2.3-alpha"));
-    }
-
-    #[test]
-    fn running_version_parses() {
-        assert!(
-            semver::Version::parse(env!("CARGO_PKG_VERSION")).is_ok(),
-            "CARGO_PKG_VERSION must be semantic versioning"
-        );
-    }
-
-    #[test]
-    fn windows_assets_match_by_arch_marker() {
-        let assets = realistic_assets();
-        assert_eq!(
-            select_asset(&assets, "windows", "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_amd64-setup.exe")
-        );
-        assert_eq!(
-            select_asset(&assets, "windows", "aarch64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_arm64-setup.exe")
-        );
-        assert!(
-            select_asset(&assets, "windows", "x86").is_none(),
-            "32-bit Windows is not shipped"
-        );
-    }
-
-    #[test]
-    fn macos_only_serves_apple_silicon() {
-        let assets = realistic_assets();
-        assert_eq!(
-            select_asset(&assets, "macos", "aarch64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_arm64.dmg")
-        );
-        assert!(
-            select_asset(&assets, "macos", "x86_64").is_none(),
-            "Intel macOS is not shipped"
-        );
-    }
-
-    #[test]
-    fn linux_prefers_native_packages_over_appimage() {
-        let assets = realistic_assets();
-        assert_eq!(
-            select_asset(&assets, "linux", "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_amd64.deb"),
-            "deb wins on x86_64"
-        );
-        assert_eq!(
-            select_asset(&assets, "linux", "aarch64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_arm64.deb"),
-            "deb wins on aarch64"
-        );
-    }
-
-    #[test]
-    fn linux_falls_back_through_rpm_to_appimage() {
-        let without_deb = vec![
-            asset("mikrotik-rif_0.2.0_amd64.rpm"),
-            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
-            asset("mikrotik-rif_0.2.0_arm64.rpm"),
-            asset("mikrotik-rif_0.2.0_arm64.AppImage"),
-        ];
-        assert_eq!(
-            select_asset(&without_deb, "linux", "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_amd64.rpm")
-        );
-        let portable_only = vec![
-            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
-            asset("mikrotik-rif_0.2.0_arm64.AppImage"),
-        ];
-        assert_eq!(
-            select_asset(&portable_only, "linux", "aarch64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_arm64.AppImage")
-        );
-    }
-
-    #[test]
-    fn linux_never_crosses_architectures() {
-        let x64_only = vec![
-            asset("mikrotik-rif_0.2.0_amd64.deb"),
-            asset("mikrotik-rif_0.2.0_amd64.rpm"),
-            asset("mikrotik-rif_0.2.0_amd64.AppImage"),
-        ];
-        assert!(
-            select_asset(&x64_only, "linux", "aarch64").is_none(),
-            "amd64 assets must not serve arm64"
-        );
-        assert!(
-            select_asset(&[], "linux", "x86_64").is_none(),
-            "empty release has no asset"
-        );
-    }
-
-    #[test]
-    fn unknown_platforms_fall_back_to_the_release_page() {
-        let assets = realistic_assets();
-        assert!(select_asset(&assets, "freebsd", "x86_64").is_none());
-        assert!(select_asset(&assets, "windows", "riscv64").is_none());
-    }
-
-    #[test]
-    fn checksums_url_finds_the_attached_sums() {
-        let release = ReleaseInfo {
-            tag: "v0.2.0".to_owned(),
-            name: None,
-            body: None,
-            page_url: "https://example.com/release".to_owned(),
-            assets: realistic_assets(),
-        };
-        let url = checksums_url(&release).expect("SHA256SUMS.txt is attached");
-        assert!(url.ends_with("SHA256SUMS.txt"), "unexpected url {url}");
-        let bare = ReleaseInfo {
-            assets: vec![asset("mikrotik-rif_0.2.0_amd64.deb")],
-            ..release
-        };
-        assert!(checksums_url(&bare).is_none());
-    }
-
-    #[test]
-    fn checksum_lookup_parses_sums_lines() {
-        let sums = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  mikrotik-rif_0.2.0_amd64.deb\n\
-                    9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 *other.deb\n";
-        assert_eq!(
-            find_checksum(sums, "mikrotik-rif_0.2.0_amd64.deb"),
-            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_owned())
-        );
-        assert_eq!(
-            find_checksum(sums, "other.deb"),
-            Some("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned()),
-            "binary marker tolerated"
-        );
-        assert!(find_checksum(sums, "missing.deb").is_none());
-        assert!(find_checksum("not a sums line\n", "a").is_none());
-        assert!(
-            find_checksum("xyz  a.deb\n", "a.deb").is_none(),
-            "short hash rejected"
-        );
-    }
-
-    #[test]
-    fn sha256_known_vector_without_network() {
-        // Well-known SHA-256 of "abc"; local data only.
-        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        let digest = hex_encode(Sha256::digest(b"abc").as_slice());
-        assert_eq!(digest, expected);
-        assert!(digests_match(&digest, &expected.to_ascii_uppercase()));
-        assert!(!digests_match(&digest, "00"));
-        assert_eq!(hex_encode(&[]), "");
-        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
-    }
-
-    /// Scratch file unique to this test process and counter.
-    fn scratch_file(contents: &[u8]) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "mikrotik-rif-update-test-{}-{id}.bin",
-            std::process::id()
-        ));
-        std::fs::write(&path, contents).expect("scratch file is writable");
-        path
-    }
-
-    #[test]
-    fn verified_files_are_kept_and_bad_ones_deleted() {
-        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        let sums = format!("{expected}  installer.bin\n");
-
-        let kept = scratch_file(b"abc");
-        match verify_against_sums(&sums, "installer.bin", &kept) {
-            DownloadOutcome::Done { path, expected_hex } => {
-                assert_eq!(path, kept);
-                assert_eq!(expected_hex, expected);
-            }
-            other => panic!("verified file must be kept, got {other:?}"),
-        }
-        assert!(kept.is_file(), "verified file stays on disk");
-        std::fs::remove_file(&kept).expect("cleanup");
-
-        let tampered = scratch_file(b"abd");
-        match verify_against_sums(&sums, "installer.bin", &tampered) {
-            DownloadOutcome::Failed(_) => {}
-            other => panic!("tampered file must fail, got {other:?}"),
-        }
-        assert!(
-            !tampered.exists(),
-            "tampered file is deleted, never executed"
-        );
-
-        let unknown = scratch_file(b"abc");
-        match verify_against_sums(&sums, "other.bin", &unknown) {
-            DownloadOutcome::Failed(_) => {}
-            other => panic!("missing entry must fail, got {other:?}"),
-        }
-        assert!(!unknown.exists(), "unverifiable file is deleted");
-    }
-
-    #[test]
-    fn notes_are_collapsed_and_capped() {
-        assert_eq!(summarize_notes(""), "");
-        assert_eq!(
-            summarize_notes("  line one\nline   two  "),
-            "line one line two"
-        );
-        let long = "w ".repeat(MAX_NOTES_CHARS);
-        let summary = summarize_notes(&long);
-        assert!(summary.ends_with('…'), "long notes are marked as cut");
-        assert!(
-            summary.chars().count() <= MAX_NOTES_CHARS + 1,
-            "notes stay within budget"
-        );
-    }
-
-    #[test]
-    fn auto_check_runs_at_most_once_a_day() {
-        assert!(should_auto_check(true, None, 1_000));
-        assert!(should_auto_check(true, Some(0), AUTO_CHECK_INTERVAL_SECS));
-        assert!(!should_auto_check(
-            true,
-            Some(100),
-            100 + AUTO_CHECK_INTERVAL_SECS - 1
-        ));
-        assert!(!should_auto_check(false, None, u64::MAX), "opt-out wins");
-        assert!(
-            !should_auto_check(true, Some(9_000), 1_000),
-            "clock skew never triggers"
-        );
-    }
-
-    #[test]
-    fn appimage_env_reports_the_running_image() {
-        use std::ffi::OsString;
-        assert_eq!(
-            running_appimage_from(Some(OsString::from("/opt/app.AppImage"))),
-            Some(PathBuf::from("/opt/app.AppImage"))
-        );
-        assert_eq!(running_appimage_from(None), None);
-        assert_eq!(running_appimage_from(Some(OsString::new())), None);
-    }
-
-    #[test]
-    fn appimage_lookup_finds_the_portable_asset() {
-        let assets = realistic_assets();
-        assert_eq!(
-            find_appimage(&assets, "_amd64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_amd64.AppImage")
-        );
-        assert_eq!(
-            find_appimage(&assets, "_arm64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_arm64.AppImage")
-        );
-        assert!(find_appimage(&assets, "riscv64").is_none());
-        // The preference is not a filter: `select_asset` still prefers the
-        // native package; only `select_asset_for_current` promotes the image
-        // for a running AppImage.
-        assert_eq!(
-            select_asset(&assets, "linux", "x86_64").map(|found| found.name.as_str()),
-            Some("mikrotik-rif_0.2.0_amd64.deb")
-        );
-    }
-
-    /// Unique scratch directory per test (tests share one process, so the
-    /// name combines the pid with an atomic counter).
-    #[cfg(target_os = "linux")]
-    fn scratch_dir() -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "mikrotik-rif-update-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn self_replace_ignores_non_appimage_files() {
-        // No environment involved: a native package never self-replaces.
-        assert!(maybe_self_replace(Path::new("mikrotik-rif_0.2.0_amd64.deb"), "00").is_none());
-        assert!(maybe_self_replace(Path::new("release-notes.txt"), "00").is_none());
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn appimage_target_must_be_a_regular_file() {
-        let dir = scratch_dir();
-        let file = dir.join("mikrotik-rif.AppImage");
-        std::fs::write(&file, b"image").expect("write file");
-        assert!(check_appimage_target(&file).is_ok());
-        assert!(
-            check_appimage_target(&dir).is_err(),
-            "a directory is not a valid AppImage target"
-        );
-        assert!(
-            check_appimage_target(&dir.join("missing.AppImage")).is_err(),
-            "a missing path is not a valid AppImage target"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn appimage_install_replaces_atomically() {
-        let dir = scratch_dir();
-        let current = dir.join("mikrotik-rif.AppImage");
-        let new_file = dir.join("downloaded.AppImage");
-        std::fs::write(&current, b"old-bytes").expect("write current");
-        std::fs::write(&new_file, b"new-bytes").expect("write new");
-
-        install_appimage_file(&current, &new_file).expect("replace");
-        assert_eq!(std::fs::read(&current).expect("read back"), b"new-bytes");
-        assert!(
-            !dir.join("mikrotik-rif.AppImage.update").exists(),
-            "staging file is gone after the rename"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&current)
-                .expect("metadata")
-                .permissions()
-                .mode();
-            assert_ne!(mode & 0o111, 0, "replaced image stays executable");
-        }
-
-        // A missing download never touches the running image.
-        let missing = dir.join("absent.AppImage");
-        assert!(install_appimage_file(&current, &missing).is_err());
-        assert_eq!(std::fs::read(&current).expect("read back"), b"new-bytes");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn only_https_github_urls_are_allowed() {
-        for url in [
-            "https://github.com/balakar94/mikrotik-rif/releases/download/v1/x.deb",
-            "https://api.github.com/repos/balakar94/mikrotik-rif/releases/latest",
-            "https://objects.githubusercontent.com/github-production-release-asset/x",
-        ] {
-            assert!(check_url(url).is_ok(), "{url} must be accepted");
-        }
-        for url in [
-            "http://github.com/x",
-            "file:///etc/passwd",
-            "evil://payload",
-            "https://evil.example.com/x",
-            "https://github.com.evil.example.com/x",
-            "https://raw.githubusercontent.com/x",
-            "not a url",
-            "",
-        ] {
-            assert!(
-                matches!(check_url(url), Err(UpdateError::InvalidUrl(_))),
-                "{url} must be refused"
-            );
-        }
-    }
-
-    #[test]
-    fn asset_dest_strips_path_traversal() {
-        let traversal = asset_dest("../../evil.exe");
-        assert_eq!(
-            traversal.file_name().and_then(|name| name.to_str()),
-            Some("evil.exe"),
-            "directory components are stripped"
-        );
-        assert!(
-            traversal.starts_with(download_dir()),
-            "destination stays inside the download directory"
-        );
-        let empty = asset_dest("");
-        assert_eq!(
-            empty.file_name().and_then(|name| name.to_str()),
-            Some("mikrotik-rif-update.bin"),
-            "a nameless asset gets a safe fallback"
-        );
-    }
-
-    #[test]
-    fn oversized_release_payloads_are_rejected() {
-        let mut release = ReleaseInfo {
-            tag: "v0.2.0".to_owned(),
-            name: None,
-            body: None,
-            page_url: "https://github.com/balakar94/mikrotik-rif/releases/tag/v0.2.0".to_owned(),
-            assets: Vec::new(),
-        };
-        assert!(
-            validate_release(&release).is_ok(),
-            "a normal release passes"
-        );
-
-        release.assets = (0..=MAX_ASSETS)
-            .map(|index| AssetInfo {
-                name: format!("asset-{index}.bin"),
-                url: format!("https://github.com/asset-{index}"),
-            })
-            .collect();
-        assert!(
-            matches!(validate_release(&release), Err(UpdateError::Response(_))),
-            "too many assets is rejected"
-        );
-
-        release.assets = vec![asset("ok.bin")];
-        release.body = Some("x".repeat(MAX_NOTES_BYTES + 1));
-        assert!(
-            matches!(validate_release(&release), Err(UpdateError::Response(_))),
-            "oversized notes are rejected"
-        );
-        release.body = None;
-        release.tag = "v".repeat(MAX_FIELD_BYTES + 1);
-        assert!(
-            matches!(validate_release(&release), Err(UpdateError::Response(_))),
-            "oversized identifier fields are rejected"
-        );
-    }
-
-    #[test]
-    fn reverify_refuses_a_file_swapped_after_verification() {
-        let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        let file = scratch_file(b"abc");
-        assert!(reverify(&file, good).is_ok(), "matching digest passes");
-
-        // A local process swaps the verified file before it is used.
-        std::fs::write(&file, b"tampered").expect("overwrite");
-        assert!(
-            matches!(reverify(&file, good), Err(UpdateError::HashMismatch(_))),
-            "a swapped file is refused"
-        );
-        assert!(!file.exists(), "the swapped file is deleted");
-    }
-}
+#[cfg(target_os = "linux")]
+pub use handoff::{maybe_self_replace, replace_running_appimage};
+pub use handoff::{open_release_page, perform_handoff, running_appimage};
+pub use net::{asset_dest, spawn_check, spawn_download};

@@ -10,13 +10,14 @@
     clippy::cast_sign_loss
 )]
 
+mod settings;
 mod update_ui;
 mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use eframe::egui::{self, Align, Color32, Layout, RichText};
+use eframe::egui::{self, Align, Color32, Layout, RichText, ThemePreference};
 use fluent_bundle::FluentArgs;
 
 use crate::i18n::I18n;
@@ -27,6 +28,7 @@ use crate::splash::{self, ScanView};
 use crate::theme::{self, Palette};
 use crate::worker::{Event, Worker};
 
+use self::settings::SettingsTab;
 use self::update_ui::{CheckState, DownloadState};
 use self::workspace::{
     FindState, human_size_u64, line_starts, max_line_length, sanitize, to_number, units,
@@ -56,6 +58,12 @@ const UPDATE_AUTO_KEY: &str = "update.auto_check";
 const UPDATE_LAST_KEY: &str = "update.last_check";
 /// eframe storage key for the release tag the user chose to skip.
 const UPDATE_SKIPPED_KEY: &str = "update.skipped_tag";
+/// eframe storage key for the last release-metadata ETag (conditional checks).
+const UPDATE_ETAG_KEY: &str = "update.etag";
+/// eframe storage key for the theme preference (`system` / `light` / `dark`).
+const THEME_KEY: &str = "app.theme";
+/// eframe storage key for the selected language tag (empty means system).
+const LANGUAGE_KEY: &str = "app.language";
 
 /// A transient message shown in the footer.
 struct Notice {
@@ -101,6 +109,16 @@ pub struct Viewer {
     /// A captured panic waiting for the user to dismiss it, if any.
     panic_report: Option<crate::panic::PanicReport>,
 
+    // Preferences (persisted; see `settings::restore_prefs`).
+    /// Light/dark/system theme preference.
+    theme_pref: ThemePreference,
+    /// Selected language tag; empty means "follow the system locale".
+    language: String,
+    /// The settings modal: `None` when hidden, otherwise the selected tab.
+    settings: Option<SettingsTab>,
+    /// Lazily uploaded texture for the GitHub mark shown in About.
+    github_texture: Option<egui::TextureHandle>,
+
     // In-app updater (the only network path; see `crate::update`).
     /// Daily automatic checks enabled (persisted).
     update_auto: bool,
@@ -108,15 +126,22 @@ pub struct Viewer {
     update_last_check: Option<u64>,
     /// Release tag the user chose to skip (persisted).
     update_skipped: String,
-    /// Release tag dismissed with "Later" (session only).
-    update_dismissed: String,
     /// Latest release newer than the running app, if one was found.
     update_release: Option<ReleaseInfo>,
     /// Verified installer waiting for the handoff, with the SHA-256 digest it
     /// was verified against (re-checked immediately before use).
     update_ready: Option<(PathBuf, String)>,
-    /// Last update failure to show (manual checks only).
+    /// Last update failure to show (manual checks and downloads only).
     update_error: Option<String>,
+    /// Whether the last completed check found the app up to date (`None` while
+    /// a check runs, after a failure, or before the first one ever runs).
+    update_up_to_date: Option<bool>,
+    /// ETag of the last release-metadata response (persisted), so a repeated
+    /// check can answer `304` instead of consuming the API rate limit.
+    update_etag: Option<String>,
+    /// One-line summary of the offered release's notes (collapsed once, when
+    /// the release is stored, instead of every frame).
+    update_summary: String,
     /// Background check state machine (at most one check runs at a time).
     check: CheckState,
     /// Background download state machine.
@@ -162,28 +187,30 @@ impl Viewer {
             rail_open: true,
             find_state: FindState::Closed,
             panic_report: None,
+            theme_pref: ThemePreference::System,
+            language: String::new(),
+            settings: None,
+            github_texture: None,
             update_auto: true,
             update_last_check: None,
             update_skipped: String::new(),
-            update_dismissed: String::new(),
             update_release: None,
             update_ready: None,
             update_error: None,
+            update_up_to_date: None,
+            update_etag: None,
+            update_summary: String::new(),
             check: CheckState::Idle,
             download: DownloadState::Idle,
             update_download: None,
         };
 
-        viewer.restore_update_prefs(cc.storage);
+        viewer.restore_prefs(cc.storage, &cc.egui_ctx);
 
         if let Some(argument) = std::env::args_os().nth(1) {
             viewer.start_scan(PathBuf::from(argument));
         }
-        if update::should_auto_check(
-            viewer.update_auto,
-            viewer.update_last_check,
-            update::now_unix(),
-        ) {
+        if update::should_auto_check(viewer.update_auto) {
             viewer.start_check(false);
         }
         viewer
@@ -423,15 +450,20 @@ impl Viewer {
     }
 
     fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
-        let (open_requested, save_requested, find_requested, escape) = ui.input(|input| {
-            let command = input.modifiers.command;
-            (
-                command && input.key_pressed(egui::Key::O),
-                command && input.key_pressed(egui::Key::S),
-                command && input.key_pressed(egui::Key::F),
-                input.key_pressed(egui::Key::Escape),
-            )
-        });
+        let (open_requested, save_requested, find_requested, settings_requested, escape) = ui
+            .input(|input| {
+                let command = input.modifiers.command;
+                (
+                    command && input.key_pressed(egui::Key::O),
+                    command && input.key_pressed(egui::Key::S),
+                    command && input.key_pressed(egui::Key::F),
+                    command && input.key_pressed(egui::Key::Comma),
+                    input.key_pressed(egui::Key::Escape),
+                )
+            });
+        if settings_requested {
+            self.settings = Some(SettingsTab::General);
+        }
         if open_requested && self.stage != Stage::Welcome {
             self.open_dialog();
         }
@@ -454,10 +486,7 @@ impl Viewer {
         args.set("os", theme::platform_name());
         args.set("arch", std::env::consts::ARCH);
         let footer = self.i18n.render("footer-build", &args);
-        let check_label = self.i18n.text("update-check");
-        let auto_label = self.i18n.text("update-auto");
 
-        let mut check_requested = false;
         ui.horizontal(|ui| {
             if let Some(busy) = &self.busy {
                 ui.spinner();
@@ -478,15 +507,8 @@ impl Viewer {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new(&footer).size(12.0).color(palette.muted));
-                if ui.small_button(&check_label).clicked() {
-                    check_requested = true;
-                }
-                ui.checkbox(&mut self.update_auto, &auto_label);
             });
         });
-        if check_requested {
-            self.start_check(true);
-        }
     }
 
     /// Show the last-resort panic dialog while a captured report is pending.
@@ -525,6 +547,19 @@ impl Viewer {
             ),
         );
     }
+
+    /// Settings entry, settings modal, stage fade and panic dialog, in order.
+    fn overlays(&mut self, ctx: &egui::Context, palette: &Palette) {
+        // The workspace header draws its own settings entry point; on the other
+        // screens (welcome, home, the opening animation) a floating gear keeps
+        // theme and language reachable before a capture is open.
+        if self.stage != Stage::Workspace {
+            self.settings_access(ctx);
+        }
+        self.settings_modal(ctx);
+        self.draw_fade(ctx, palette);
+        self.panic_dialog(ctx);
+    }
 }
 
 impl eframe::App for Viewer {
@@ -535,6 +570,15 @@ impl eframe::App for Viewer {
             storage.set_string(UPDATE_LAST_KEY, last.to_string());
         }
         storage.set_string(UPDATE_SKIPPED_KEY, self.update_skipped.clone());
+        storage.set_string(
+            UPDATE_ETAG_KEY,
+            self.update_etag.clone().unwrap_or_default(),
+        );
+        storage.set_string(
+            THEME_KEY,
+            settings::theme_storage_key(self.theme_pref).to_owned(),
+        );
+        storage.set_string(LANGUAGE_KEY, self.language.clone());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -542,7 +586,11 @@ impl eframe::App for Viewer {
         self.drain();
         self.poll_update();
         self.handle_dropped(ui.ctx());
-        self.handle_shortcuts(ui);
+        // The settings modal consumes its own keys (Esc closes it); letting the
+        // workspace shortcuts run underneath would close two things at once.
+        if self.settings.is_none() {
+            self.handle_shortcuts(ui);
+        }
         self.advance_stage();
         if let Some(report) = crate::panic::take_report() {
             self.panic_report = Some(report);
@@ -555,9 +603,6 @@ impl eframe::App for Viewer {
         egui::Panel::bottom("footer")
             .frame(footer_frame)
             .show(ui, |ui| self.footer_bar(ui));
-        if self.update_banner_visible() {
-            self.update_banner(ui);
-        }
 
         match self.stage {
             Stage::Welcome => {
@@ -630,8 +675,7 @@ impl eframe::App for Viewer {
             }
         }
 
-        self.draw_fade(ui.ctx(), &palette);
-        self.panic_dialog(ui.ctx());
+        self.overlays(ui.ctx(), &palette);
         if self.busy.is_some()
             || self.stage == Stage::Scanning
             || !matches!(self.check, CheckState::Idle)

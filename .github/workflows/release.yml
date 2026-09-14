@@ -39,6 +39,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Gate 1: the tag must match Cargo.toml. cargo-packager bakes Cargo.toml's
+      # `version` into every normalised asset name
+      # (`mikrotik-rif_<version>_<arch>.<ext>`), so a tag pushed from a tree
+      # with a different version would publish a Release whose assets and notes
+      # disagree with the tag. Fail before anything is downloaded or uploaded.
+      # Only reached on tags: the job-level `if` above gates this whole job.
+      # ROLLBACK: delete this step.
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ -z "${version}" ]; then
+            echo "ERROR: could not read the version from Cargo.toml" >&2
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME}"
+          if [ "${tag}" != "v${version}" ]; then
+            echo "ERROR: tag '${tag}' does not match Cargo.toml version 'v${version}'" >&2
+            exit 1
+          fi
+          echo "OK: tag '${tag}' matches Cargo.toml version '${version}'."
+
       - name: Download all installer artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -53,6 +76,69 @@ jobs:
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      # Gate 2 (pre-publish): SHA256SUMS.txt must list exactly the files that
+      # will be uploaded (`files: dist/*` in the Publish step), and no name may
+      # contain whitespace. GitHub Releases rewrites spaces in asset names
+      # (v0.2.0 shipped `MikroTik RIF Viewer_0.2.0_aarch64.dmg`, published as
+      # `MikroTik.RIF.Viewer_0.2.0_aarch64.dmg`), which makes the published
+      # names diverge from the manifest and breaks `sha256sum -c`. Failing here
+      # prevents publishing a Release whose own checksums do not match its
+      # assets. The post-publish step below re-checks against the real release.
+      # ROLLBACK: delete this step.
+      - name: Verify SHA256SUMS.txt matches the files to publish
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # 1. Reject any name with whitespace: GitHub will rewrite it on upload.
+          if find . -maxdepth 1 -type f -name '*[[:space:]]*' | grep -q .; then
+            echo "ERROR: dist/ contains file names with whitespace; GitHub" >&2
+            echo "ERROR: rewrites those on upload, so SHA256SUMS.txt would no" >&2
+            echo "ERROR: longer match the published assets:" >&2
+            find . -maxdepth 1 -type f -name '*[[:space:]]*' >&2
+            exit 1
+          fi
+          # 2. Manifest names must equal every dist file except the manifest
+          #    itself (and its detached signature, which is produced later and
+          #    covers the manifest). `sha256sum` emits "<hash>  <name>"; strip
+          #    the hash and the two-space separator to recover the name.
+          expected="$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'SHA256SUMS.txt.minisig' -printf '%f\n' | sort)"
+          manifest="$(sed 's/^[0-9a-f]\{64\}  //' SHA256SUMS.txt | sort)"
+          if [ "${expected}" != "${manifest}" ]; then
+            echo "ERROR: SHA256SUMS.txt does not list exactly the files to publish" >&2
+            diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${manifest}") >&2 || true
+            exit 1
+          fi
+          echo "OK: SHA256SUMS.txt lists exactly the $(printf '%s\n' "${manifest}" | grep -c .) files to publish, all space-free."
+
+      # Optional release signing. It runs the signing branch only when
+      # MINISIGN_SECRET_KEY is set, so the pipeline keeps working unsigned; with
+      # the secret present it writes `dist/SHA256SUMS.txt.minisig`, which
+      # `files: dist/*` uploads and the in-app updater verifies whenever it was
+      # built with the matching public key (MIKROTIK_RIF_MINISIGN_PUBKEY in
+      # build.yml). Use an *unencrypted* minisign secret key: the reference CLI
+      # prompts on a terminal and cannot take a password non-interactively.
+      # ROLLBACK: delete the secret (or this step); the release is then unsigned
+      # again and any binary built with the public key refuses to update,
+      # so remove that variable too.
+      - name: Sign SHA256SUMS.txt (optional)
+        working-directory: dist
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "No MINISIGN_SECRET_KEY configured; skipping release signing."
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends minisign
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${RUNNER_TEMP}/minisign.key"
+          chmod 600 "${RUNNER_TEMP}/minisign.key"
+          minisign -S -W -s "${RUNNER_TEMP}/minisign.key" -m SHA256SUMS.txt \
+            -x SHA256SUMS.txt.minisig -t "mikrotik-rif ${GITHUB_REF_NAME}"
+          rm -f "${RUNNER_TEMP}/minisign.key"
+          ls -l SHA256SUMS.txt.minisig
 
       - name: Publish release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -115,3 +201,31 @@ jobs:
               **More info**, then **Run anyway**.
           files: |
             dist/*
+
+      # Gate 2 (post-publish): assert the Release really carries the names in
+      # SHA256SUMS.txt, plus SHA256SUMS.txt itself (the Publish step uploads
+      # `dist/*`, which includes the manifest). The pre-publish gate cannot see
+      # server-side renames; this one can, and it is what caught the v0.2.0
+      # space-to-dot rewrite. The Release already exists if this fails, so a red
+      # run here means "follow up / fix the names", not "nothing was published".
+      # NOTE: strict equality; a leftover asset from an earlier run of the same
+      # tag would also fail this check. ROLLBACK: delete this step.
+      - name: Verify published release assets match SHA256SUMS.txt
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # The installers the manifest describes...
+          expected="$(sed 's/^[0-9a-f]\{64\}  //' SHA256SUMS.txt | sort)"
+          # ...versus the published assets, ignoring the manifest and its
+          # optional signature (both are metadata, not installers).
+          actual="$(gh release view "${tag}" --json assets --jq '.assets[].name' \
+            | grep -v -E '^SHA256SUMS\.txt(\.minisig)?$' | sort)"
+          if [ "${expected}" != "${actual}" ]; then
+            echo "ERROR: published assets for '${tag}' differ from SHA256SUMS.txt" >&2
+            diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") >&2 || true
+            exit 1
+          fi
+          echo "OK: published assets for '${tag}' match SHA256SUMS.txt."

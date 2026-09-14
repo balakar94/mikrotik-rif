@@ -10,6 +10,8 @@
     clippy::cast_sign_loss
 )]
 
+use std::path::Path;
+
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, TextEdit, TextStyle};
 use fluent_bundle::FluentArgs;
 
@@ -37,28 +39,29 @@ impl FindState {
 }
 
 impl Viewer {
-    /// Top bar: the open capture, the rail toggle and the actions that need a home.
+    /// Top bar: the open capture, the rail toggle and the settings entry.
     ///
     /// The product name is deliberately absent: the operating system already
     /// draws it in the window title bar. There is no in-window menu either,
     /// because on macOS a menu belongs in the system bar.
+    ///
+    /// The open capture is shown as a clickable chip that also opens another
+    /// file, so the action sits next to the context it acts on instead of in
+    /// the opposite corner. The right edge is reserved for the settings gear,
+    /// a stable anchor that also carries the update badge.
     pub(crate) fn header(&mut self, ui: &mut egui::Ui) {
         let palette = theme::current(ui.ctx());
         let open_label = self.i18n.text("button-open");
+        let open_hint = self.i18n.text("button-open-capture");
         let toggle_hint = self.i18n.text("button-toggle-rail");
         let no_capture = self.i18n.text("label-no-capture");
-        let name = self.source.as_deref().map_or_else(
-            || no_capture.clone(),
-            |path| {
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                )
-            },
-        );
+        let settings_hint = self.settings_hint();
+        let settings_badge = self.update_available();
+        let source = self.source.clone();
 
         let mut open = false;
         let mut toggle_rail = false;
+        let mut open_settings = false;
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             toggle_rail = icons::icon_button(
@@ -70,20 +73,33 @@ impl Viewer {
                 &toggle_hint,
             );
             ui.add_space(4.0);
-            ui.label(RichText::new(name).size(12.5).color(palette.muted));
+            if let Some(path) = &source {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                if file_chip(ui, &palette, &name, path, &open_hint).clicked() {
+                    open = true;
+                }
+            } else {
+                ui.label(RichText::new(no_capture).size(12.5).color(palette.muted));
+                if ui.button(open_label).clicked() {
+                    open = true;
+                }
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(6.0);
-                if ui
-                    .add(egui::Button::new(open_label).corner_radius(8.0))
-                    .clicked()
-                {
-                    open = true;
+                if super::settings::gear_button(ui, &palette, settings_badge, &settings_hint) {
+                    open_settings = true;
                 }
             });
         });
 
         if toggle_rail {
             self.rail_open = !self.rail_open;
+        }
+        if open_settings {
+            self.settings = Some(super::settings::SettingsTab::General);
         }
         if open {
             self.open_dialog();
@@ -427,6 +443,95 @@ impl Viewer {
         self.matches = found;
         self.match_cursor = 0;
     }
+}
+
+/// A clickable chip showing the open capture.
+///
+/// Turning the file name into the way to open another capture keeps the action
+/// beside its context; the hover tooltip and the pointer cursor cover the
+/// discoverability a plain label would lose.
+fn file_chip(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    name: &str,
+    path: &Path,
+    hint: &str,
+) -> egui::Response {
+    let font = FontId::proportional(12.5);
+    let text_width = ui.ctx().fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(name.to_owned(), font.clone(), palette.text)
+            .size()
+            .x
+    });
+    let max_width = (ui.available_width() - 40.0).max(90.0);
+    let width = (text_width + 34.0).clamp(90.0, max_width);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let fill = if hovered {
+        palette.card_hover
+    } else {
+        palette.card
+    };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, 8.0, fill);
+    painter.rect_stroke(
+        rect,
+        8.0,
+        egui::Stroke::new(1.0, palette.card_hover),
+        egui::StrokeKind::Inside,
+    );
+    draw_file_glyph(
+        painter,
+        egui::pos2(rect.left() + 14.0, rect.center().y),
+        palette.accent,
+    );
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 26.0, rect.top()),
+        egui::pos2(rect.right() - 8.0, rect.bottom()),
+    );
+    painter.with_clip_rect(text_rect).text(
+        text_rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        name,
+        font,
+        palette.text,
+    );
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.on_hover_text(format!("{hint}\n{}", path.display()))
+}
+
+/// A small page glyph with a folded corner, for the file chip.
+fn draw_file_glyph(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let page = egui::Rect::from_center_size(center, egui::vec2(11.0, 14.0));
+    painter.rect_stroke(
+        page,
+        2.0,
+        egui::Stroke::new(1.4, color),
+        egui::StrokeKind::Inside,
+    );
+    let fold = 4.5;
+    let corner = page.right_top();
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(corner.x - fold, corner.y),
+            egui::pos2(corner.x, corner.y + fold),
+            corner,
+        ],
+        Color32::TRANSPARENT,
+        egui::Stroke::new(1.2, color),
+    ));
+    painter.line_segment(
+        [
+            egui::pos2(page.left() + 3.0, page.center().y),
+            egui::pos2(page.right() - 3.0, page.center().y),
+        ],
+        egui::Stroke::new(1.0, color),
+    );
 }
 
 /// A comfortable, full-width search field on a rounded card.

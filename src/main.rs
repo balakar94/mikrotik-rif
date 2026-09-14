@@ -15,6 +15,7 @@
 )]
 
 mod app;
+mod build_info;
 mod i18n;
 mod icons;
 mod panic;
@@ -40,6 +41,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(PRODUCT_NAME)
+            // Used for the on-disk preferences folder (and Wayland's app id);
+            // matches the bundle identifier in `Cargo.toml`.
+            .with_app_id("io.github.balakar94.mikrotik-rif")
             .with_inner_size([1280.0, 840.0])
             .with_min_inner_size([820.0, 520.0])
             .with_icon(icon),

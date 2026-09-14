@@ -1,7 +1,7 @@
 [package]
 name = "mikrotik-rif"
 description = "MikroTik RIF Viewer — reader for RouterOS supout captures"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -15,7 +15,10 @@ path = "src/main.rs"
 [dependencies]
 flate2 = "1.1"
 thiserror = "2.0"
-eframe = "0.36"
+# `persistence` is what makes eframe hand the app a `Storage` (and call
+# `App::save`): without it the theme, language and updater preferences are
+# never written to disk. It also persists the window geometry for free.
+eframe = { version = "0.36", features = ["persistence"] }
 egui = "0.36"
 rfd = "0.17"
 fluent-bundle = "0.16"
@@ -23,8 +26,12 @@ unic-langid = "0.9"
 sys-locale = "0.3"
 ureq = { version = "3", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 semver = "1"
 sha2 = "0.11"
+# Optional release signing: the updater verifies `SHA256SUMS.txt.minisig`
+# whenever a public key was embedded at build time (see `src/update.rs`).
+minisign-verify = "0.2"
 open = "5"
 
 # Compiles app.rc on Windows so the .exe carries the application icon.
@@ -76,9 +83,17 @@ license-file = "LICENSE"
 # conventional /usr/share/licenses/ entries below.
 resources = [
     { src = "LICENSE", target = "licenses/LICENSE" },
+    { src = "THIRD-PARTY-NOTICES.md", target = "licenses/THIRD-PARTY-NOTICES.md" },
     { src = "assets/fonts/OFL-Inter.txt", target = "licenses/OFL-Inter.txt" },
     { src = "assets/fonts/OFL-JetBrainsMono.txt", target = "licenses/OFL-JetBrainsMono.txt" },
     { src = "assets/fonts/OFL-NotoSansSC.txt", target = "licenses/OFL-NotoSansSC.txt" },
+    # egui embeds four default fonts through `FontDefinitions::default()`
+    # (Hack, Noto Emoji, Ubuntu Light and emoji-icon-font); their licence texts
+    # travel with the app too.
+    { src = "assets/fonts/egui/OFL-NotoEmoji.txt", target = "licenses/OFL-NotoEmoji.txt" },
+    { src = "assets/fonts/egui/UFL-Ubuntu-Light.txt", target = "licenses/UFL-Ubuntu-Light.txt" },
+    { src = "assets/fonts/egui/MIT-Hack.txt", target = "licenses/MIT-Hack.txt" },
+    { src = "assets/fonts/egui/MIT-emoji-icon-font.txt", target = "licenses/MIT-emoji-icon-font.txt" },
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,7 +150,12 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 "assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
 "assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
 "assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
+"assets/fonts/egui/OFL-NotoEmoji.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoEmoji.txt"
+"assets/fonts/egui/UFL-Ubuntu-Light.txt" = "/usr/share/licenses/mikrotik-rif/UFL-Ubuntu-Light.txt"
+"assets/fonts/egui/MIT-Hack.txt" = "/usr/share/licenses/mikrotik-rif/MIT-Hack.txt"
+"assets/fonts/egui/MIT-emoji-icon-font.txt" = "/usr/share/licenses/mikrotik-rif/MIT-emoji-icon-font.txt"
 "LICENSE" = "/usr/share/licenses/mikrotik-rif/LICENSE"
+"THIRD-PARTY-NOTICES.md" = "/usr/share/licenses/mikrotik-rif/THIRD-PARTY-NOTICES.md"
 "assets/linux/mikrotik-rif-mime.xml" = "/usr/share/mime/packages/mikrotik-rif.xml"
 
 # AppImage reuses the .deb file-copying routine, so the same map is repeated for
@@ -144,7 +164,12 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 "assets/fonts/OFL-Inter.txt" = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt"
 "assets/fonts/OFL-JetBrainsMono.txt" = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt"
 "assets/fonts/OFL-NotoSansSC.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt"
+"assets/fonts/egui/OFL-NotoEmoji.txt" = "/usr/share/licenses/mikrotik-rif/OFL-NotoEmoji.txt"
+"assets/fonts/egui/UFL-Ubuntu-Light.txt" = "/usr/share/licenses/mikrotik-rif/UFL-Ubuntu-Light.txt"
+"assets/fonts/egui/MIT-Hack.txt" = "/usr/share/licenses/mikrotik-rif/MIT-Hack.txt"
+"assets/fonts/egui/MIT-emoji-icon-font.txt" = "/usr/share/licenses/mikrotik-rif/MIT-emoji-icon-font.txt"
 "LICENSE" = "/usr/share/licenses/mikrotik-rif/LICENSE"
+"THIRD-PARTY-NOTICES.md" = "/usr/share/licenses/mikrotik-rif/THIRD-PARTY-NOTICES.md"
 "assets/linux/mikrotik-rif-mime.xml" = "/usr/share/mime/packages/mikrotik-rif.xml"
 
 # macOS disk image: custom drag-to-/Applications window background.
@@ -185,4 +210,9 @@ assets = [
     { source = "assets/fonts/OFL-Inter.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-Inter.txt", mode = "644" },
     { source = "assets/fonts/OFL-JetBrainsMono.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-JetBrainsMono.txt", mode = "644" },
     { source = "assets/fonts/OFL-NotoSansSC.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-NotoSansSC.txt", mode = "644" },
+    { source = "assets/fonts/egui/OFL-NotoEmoji.txt", dest = "/usr/share/licenses/mikrotik-rif/OFL-NotoEmoji.txt", mode = "644" },
+    { source = "assets/fonts/egui/UFL-Ubuntu-Light.txt", dest = "/usr/share/licenses/mikrotik-rif/UFL-Ubuntu-Light.txt", mode = "644" },
+    { source = "assets/fonts/egui/MIT-Hack.txt", dest = "/usr/share/licenses/mikrotik-rif/MIT-Hack.txt", mode = "644" },
+    { source = "assets/fonts/egui/MIT-emoji-icon-font.txt", dest = "/usr/share/licenses/mikrotik-rif/MIT-emoji-icon-font.txt", mode = "644" },
+    { source = "THIRD-PARTY-NOTICES.md", dest = "/usr/share/licenses/mikrotik-rif/THIRD-PARTY-NOTICES.md", mode = "644" },
 ]

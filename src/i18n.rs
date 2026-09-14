@@ -52,23 +52,28 @@ impl I18n {
             .iter()
             .map(|(locale, source)| catalog(locale, source))
             .collect();
-
-        let wanted = tag
-            .split(['-', '_'])
-            .next()
-            .unwrap_or(BASE_LANGUAGE)
-            .to_ascii_lowercase();
-        let current = catalogs
-            .iter()
-            .position(|catalog| catalog.id.language.as_str() == wanted)
-            .or_else(|| {
-                catalogs
-                    .iter()
-                    .position(|catalog| catalog.id.language.as_str() == BASE_LANGUAGE)
-            })
-            .unwrap_or(0);
-
+        let current = select(&catalogs, tag);
         Self { catalogs, current }
+    }
+
+    /// Switch the running interface to the best catalog for `tag`.
+    ///
+    /// Used by the settings screen; the catalogs are embedded, so no reloading
+    /// or file access is involved.
+    pub fn set_language(&mut self, tag: &str) {
+        self.current = select(&self.catalogs, tag);
+    }
+
+    /// Language tag of the catalog currently selected.
+    ///
+    /// Exercised by the localization tests; the binary does not read it back,
+    /// so the allowance keeps `cargo clippy --all-targets -D warnings` happy.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn language(&self) -> &str {
+        self.catalogs
+            .get(self.current)
+            .map_or(BASE_LANGUAGE, |catalog| catalog.id.language.as_str())
     }
 
     /// Format a message that takes no arguments.
@@ -115,6 +120,53 @@ impl I18n {
         }
         id.to_owned()
     }
+}
+
+/// Pick the catalog index whose language best matches `tag`.
+///
+/// Only the primary subtag is compared (`es-ES` matches `es`); anything
+/// unknown falls back to the base language and, failing that, the first
+/// catalog.
+fn select(catalogs: &[Catalog], tag: &str) -> usize {
+    let wanted = tag
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(BASE_LANGUAGE)
+        .to_ascii_lowercase();
+    catalogs
+        .iter()
+        .position(|catalog| catalog.id.language.as_str() == wanted)
+        .or_else(|| {
+            catalogs
+                .iter()
+                .position(|catalog| catalog.id.language.as_str() == BASE_LANGUAGE)
+        })
+        .unwrap_or(0)
+}
+
+/// Language tags of every embedded locale, in build order.
+#[must_use]
+pub fn shipped_languages() -> Vec<&'static str> {
+    SHIPPED.iter().map(|(tag, _)| *tag).collect()
+}
+
+/// Name of a locale as its own speakers write it.
+///
+/// Endonyms are data, not translations: the picker always shows `Deutsch`
+/// next to `Español`, whatever language the interface is currently using.
+#[must_use]
+pub fn endonym(tag: &str) -> String {
+    match tag {
+        "en" => "English",
+        "de" => "Deutsch",
+        "es" => "Español",
+        "fr" => "Français",
+        "lv" => "Latviešu",
+        "ru" => "Русский",
+        "zh" => "中文",
+        other => other,
+    }
+    .to_owned()
 }
 
 /// Look a message up in one bundle and format it, if it is defined there.
@@ -274,6 +326,34 @@ mod tests {
     fn unknown_identifier_is_returned_unchanged() {
         let i18n = I18n::for_language("en");
         assert_eq!(i18n.text("missing-identifier"), "missing-identifier");
+    }
+
+    #[test]
+    fn switching_language_at_runtime_works() {
+        let mut i18n = I18n::for_language("en");
+        assert_eq!(i18n.language(), "en");
+        assert_eq!(i18n.text("status-ready"), "Ready");
+        i18n.set_language("es");
+        assert_eq!(i18n.language(), "es");
+        assert_eq!(i18n.text("status-ready"), "Listo");
+    }
+
+    #[test]
+    fn shipped_languages_are_unique_and_include_the_base() {
+        let mut tags = shipped_languages();
+        let count = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), count, "duplicate shipped language tags");
+        assert!(tags.contains(&BASE_LANGUAGE));
+    }
+
+    #[test]
+    fn endonyms_are_self_describing_and_untranslated() {
+        assert_eq!(endonym("en"), "English");
+        assert_eq!(endonym("es"), "Español");
+        assert_eq!(endonym("ru"), "Русский");
+        assert_eq!(endonym("xx"), "xx", "unknown tags pass through");
     }
 
     /// The embedded source of one shipped locale.

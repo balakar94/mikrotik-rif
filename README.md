@@ -41,12 +41,16 @@ traffic other than the opt-out update check described below.
   marked, instead of being silently dropped.
 - **Everything stays on the machine.** The parser is UI-agnostic and touches no
   files; the app writes nothing to disk unless you ask it to export a module.
-- **Follows your system.** Light/dark theme and interface language are detected
-  from the OS and can be overridden per run.
-- **Updates on your terms.** At most once a day the app asks the GitHub releases
-  API whether a newer version exists (opt out in the footer). A dismissable
-  banner offers the download, the installer is SHA-256-verified against the
-  release's `SHA256SUMS.txt`, and the final install step is always yours.
+- **Follows your system, remembers your choice.** Light/dark theme and
+  interface language are detected from the OS and can be changed at any time in
+  the Settings screen, where the choice is remembered across runs.
+- **Updates on your terms.** On every launch, while it is enabled, the app asks
+  the GitHub releases API whether a newer version exists (opt out in Settings).
+  Settings shows the running version and a short build hash, offers the
+  download, verifies the installer against the release's `SHA256SUMS.txt`, and
+  always leaves the final install step to you — macOS only downloads the `.dmg`.
+  **Skip this version** keeps the automatic check quiet until you run a manual
+  check from Settings.
 
 ## Install
 
@@ -102,6 +106,9 @@ The interface moves through four stages:
 
 In the workspace:
 
+- The open capture is a chip in the top bar: click it (or `Cmd/Ctrl+O`) to open
+  another file, so the action sits next to the file name it acts on.
+- The **gear** on the right opens **Settings** (see below).
 - The rail can be collapsed from the panel button in the top bar, giving the
   text the full width.
 - Modules that share a label are disambiguated as `· copy 2`, `· copy 3`, and
@@ -120,7 +127,30 @@ Keyboard shortcuts (Command on macOS, Control elsewhere):
 | `Cmd/Ctrl+O` | Open a capture |
 | `Cmd/Ctrl+S` | Save the open module as… |
 | `Cmd/Ctrl+F` | Search in the open module |
-| `Esc` | Close the search bar |
+| `Cmd/Ctrl+,` | Open Settings |
+| `Esc` | Close the search bar or Settings |
+
+## Settings
+
+The gear in the top bar (and on the welcome and home screens), or
+`Cmd/Ctrl+,`, opens a modal with three tabs:
+
+- **General** — theme (follow the system, light or dark) and interface language,
+  both remembered across runs.
+- **Updates** — the running version and a short build hash (SHA-256 of the
+  compilation commit; the commit itself is in the tooltip), the automatic-check
+  toggle and a manual **Check for updates**. The automatic check runs on every
+  launch while enabled and reuses the previous response's ETag, so an unchanged
+  release answers `304` instead of consuming the GitHub API quota; skipping a
+  version keeps it quiet, and a manual check always surfaces it again. The tab
+  also shows when the last check ran. When a newer release exists it shows its
+  notes and one action: **Download and install** on Windows and Linux,
+  **Download the .dmg** on macOS. A download is SHA-256-verified against the
+  release's `SHA256SUMS.txt` before anything is handed to the operating system
+  (and against its optional minisign signature when the build embeds a signing
+  key), and a dot on the gear marks an update found by the automatic check.
+- **About** — version, copyright, the MIT licence, a link to the GitHub
+  repository and third-party credits (egui/eframe and the bundled fonts).
 
 ## Requirements
 
@@ -172,12 +202,13 @@ router configuration, so the tests build synthetic captures in memory.
 
 ## Localization
 
-The interface language follows the system locale and falls back to English.
-Translations are plain [Fluent](https://projectfluent.org/) files under
-`locales/<tag>/mikrotik-rif.ftl`: the build script discovers them and embeds
-them at compile time, with no registry to update by hand, and a test asserts
-that every locale defines exactly the same identifiers as the base file. Set
-`MIKROTIK_RIF_LANG` to force a locale for one run:
+The interface language follows the system locale and falls back to English, and
+can be switched at runtime from Settings. Translations are plain
+[Fluent](https://projectfluent.org/) files under `locales/<tag>/mikrotik-rif.ftl`:
+the build script discovers them and embeds them at compile time, with no
+registry to update by hand, and a test asserts that every locale defines exactly
+the same identifiers as the base file. Set `MIKROTIK_RIF_LANG` to force a locale
+for one run:
 
 ```sh
 MIKROTIK_RIF_LANG=de cargo run -- supout.rif
@@ -189,24 +220,34 @@ MIKROTIK_RIF_LANG=de cargo run -- supout.rif
 Cargo.toml
 app.rc               Windows icon resource compiled into the .exe
 LICENSE
+THIRD-PARTY-NOTICES.md  dependency licence texts, shipped inside every package
+about.toml           cargo-about policy for the third-party notices
+about.hbs            template used to render THIRD-PARTY-NOTICES.md
 .github/workflows/   CI, the tag-triggered release pipeline and a packaging smoke run
 docs/RELEASE.md      release engineering and verified prerequisites
 src/
   main.rs            entry point and module wiring
+  build_info.rs      version, git commit and the short build hash
   app.rs             application shell, stages and orchestration
   app/workspace.rs   module rail, text view and in-module search
-  app/update_ui.rs   update banner and its state machine
+  app/update_ui.rs   updater state machines and hand-off
+  app/settings.rs    settings modal: shell, theme and language
+  app/settings/      updates.rs and about.rs tabs
   splash.rs          welcome, home and the opening animation
   theme.rs           light/dark palettes, background gradient, fonts
   icons.rs           vector icons drawn with the painter
   i18n.rs            Fluent loading, OS detection, fallback chain
   panic.rs           last-resort panic log and dialog
-  update.rs          release check, verified download and hand-off
+  update.rs          updater's public surface, version and asset rules
+  update/net.rs      HTTP transport, release fetch and installer download
+  update/handoff.rs  installer hand-off and AppImage self-replace
+  update/tests.rs    updater tests (fake transport, no network)
   worker.rs          background reading, indexing and decoding
   parser/            capture format reader (codec, scanner, deflate, capture, limits, error)
 locales/<tag>/mikrotik-rif.ftl
 assets/fonts/        bundled Inter, JetBrains Mono and Noto Sans SC (OFL)
-assets/icon/         application icon (PNG / ICNS / ICO)
+assets/fonts/egui/   licence texts for egui's embedded default fonts
+assets/icon/         application icon (PNG / ICNS / ICO / GitHub mark)
 assets/linux/        freedesktop entry, MIME definition and 512 px icon
 assets/macos/        disk image background
 tools/make_icon.py   regenerates the icon assets
@@ -234,10 +275,22 @@ and the Linux packages install all three under
 Because the fonts are embedded, the release binary is around 19 MB, most of it
 the CJK font.
 
+## Roadmap
+
+What is intentionally not done yet — including the minisign release-signing path
+(code implemented, off by default, not operational until a key pair is
+configured) and OS code signing — lives in [`ROADMAP.md`](ROADMAP.md).
+
 ## License
 
 Released under the [MIT License](LICENSE). You are free to use, modify and
 redistribute it, provided the copyright notice and permission notice are kept.
+
+The binary also embeds third-party code and fonts. Their copyright notices and
+licence texts are collected in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and installed with every
+package (regenerate with `cargo about generate about.hbs --output-file
+THIRD-PARTY-NOTICES.md`; CI fails if the file drifts from `Cargo.lock`).
 
 ## Trademarks
 
@@ -246,3 +299,7 @@ sponsored by MikroTik**. "MikroTik" and "RouterOS" are trademarks of their
 respective owner and are used here only to describe interoperability. The
 router glyph in the application icon and on the welcome screen is a generic
 access-point drawing, not the MikroTik logo.
+
+The GitHub mark in the About tab is GitHub's official logo, unmodified and used
+only as a link to this project's repository; the project is not affiliated with
+or endorsed by GitHub.

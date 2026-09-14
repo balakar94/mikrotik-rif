@@ -54,6 +54,55 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     fs::write(Path::new(&out_dir).join("locales.rs"), generated).expect("write locales.rs");
+
+    emit_build_identity();
+}
+
+/// Expose the commit this binary was compiled from to the crate.
+///
+/// The About and Updates screens quote a short build hash so a bug report can
+/// name the exact build. `MIKROTIK_RIF_COMMIT` lets CI inject the value when
+/// the build happens without a `.git` directory; otherwise the local
+/// repository is asked. A missing git (source tarball, packaged build) falls
+/// back to `unknown` so the build never fails over build metadata.
+fn emit_build_identity() {
+    println!("cargo:rerun-if-env-changed=MIKROTIK_RIF_COMMIT");
+    // The commit changes when `HEAD` moves; without this the value is only
+    // refreshed when some other watched file changes.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+
+    let commit = std::env::var("MIKROTIK_RIF_COMMIT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(git_head)
+        .unwrap_or_else(|| "unknown".to_owned());
+    println!("cargo:rustc-env=MIKROTIK_RIF_GIT_COMMIT={commit}");
+
+    // Optional release-signing public key (minisign, base64, one line). Empty
+    // when the maintainer has not configured signing; the updater then keeps
+    // its SHA-256-only behaviour. Read from the environment so the key is not
+    // hard-coded in the source tree.
+    println!("cargo:rerun-if-env-changed=MIKROTIK_RIF_MINISIGN_PUBKEY");
+    let pubkey = std::env::var("MIKROTIK_RIF_MINISIGN_PUBKEY")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=MIKROTIK_RIF_MINISIGN_PUBKEY={pubkey}");
+}
+
+/// `git rev-parse HEAD`, or `None` when git is unavailable or this is not a
+/// repository checkout.
+fn git_head() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!commit.is_empty()).then_some(commit)
 }
 
 /// Whether a directory name is a plausible BCP-47 tag such as `en` or `zh-Hans`.
