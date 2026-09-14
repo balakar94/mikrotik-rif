@@ -195,6 +195,13 @@ jobs:
       # (the CI override being dropped, the AppleScript being skipped, or the
       # background being changed) breaks the build instead of shipping a plain
       # .dmg. macOS only: only the .dmg has a Finder background.
+      #
+      # The TTY-less mount below doubles as the guard against a click-through
+      # EULA: if `license-file` is ever re-added to [package.metadata.packager],
+      # cargo-packager passes it to create-dmg as `--eula` and `hdiutil attach`
+      # aborts with "attach canceled" (run 34793505291). The explicit
+      # `udifderez` check first turns that into an actionable message instead of
+      # one that blames `--skip-jenkins`.
       - name: Verify .dmg volume background (.DS_Store)
         if: runner.os == 'macOS'
         shell: bash
@@ -211,6 +218,29 @@ jobs:
           done
           if [ -z "${dmg}" ]; then
             echo "ERROR: no .dmg found in dist/ to verify on macOS" >&2
+            exit 1
+          fi
+          # A DMG that carries a software licence agreement makes hdiutil print
+          # the licence and wait for "yes"; headless it reads EOF and cancels.
+          # Detect the agreement resources (LPic/TEXT, applied by create-dmg's
+          # `--eula` -> hdiutil udifrez) before mounting, so the failure names
+          # the real cause. hdiutil udifderez is deprecated but still present,
+          # and we fail closed if it ever disappears or errors. ROLLBACK: delete
+          # this guard; the attach below still fails, just with the generic
+          # `.DS_Store` message.
+          if ! rez="$(hdiutil udifderez "${dmg}" 2>/dev/null)"; then
+            echo "ERROR: hdiutil udifderez failed on '${dmg}', so an embedded" >&2
+            echo "ERROR: EULA cannot be ruled out. Refusing to continue." >&2
+            exit 1
+          fi
+          if printf '%s\n' "${rez}" | grep -Eq '<key>(LPic|STR#|TEXT|RTF )</key>'; then
+            echo "ERROR: '${dmg}' carries a software licence agreement (LPic/" >&2
+            echo "ERROR: TEXT resources), which cannot be mounted without" >&2
+            echo "ERROR: interactive acceptance. Likely cause: license-file is" >&2
+            echo "ERROR: set in [package.metadata.packager] in Cargo.toml, so" >&2
+            echo "ERROR: cargo-packager passed create-dmg --eula. See the key's" >&2
+            echo "ERROR: comment; the DMG must stay EULA-free for headless" >&2
+            echo "ERROR: mounts (see docs/RELEASE.md)." >&2
             exit 1
           fi
           echo "Verifying '${dmg}' contains a root .DS_Store"

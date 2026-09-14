@@ -250,6 +250,35 @@ the packaging step carries a 30-minute `timeout-minutes` bound. Rollback is
 deleting the `env:` override and the verification step; the `.dmg`s then lose
 the background again and the verification step fails.
 
+### Why the `.dmg` has no click-through licence agreement (EULA)
+
+`[package.metadata.packager]` in `Cargo.toml` deliberately has **no
+`license-file`**. In cargo-packager 0.11.8 that key is consumed by three
+formats, and one of them cannot work headless:
+
+- **DMG** — `crates/packager/src/package/dmg/mod.rs` passes it to create-dmg as
+  `--eula`, which applies it with `hdiutil udifrez` (`LPic`/`STR#`/`TEXT`
+  resources). Mounting the image then prints the licence and waits for "yes";
+  a non-interactive `hdiutil attach` (CI, install scripts, `</dev/null`) reads
+  EOF and aborts with `hdiutil: attach canceled`. That failed the macOS
+  packaging job in run `34793505291` at the `.DS_Store` verification step, and
+  `hdiutil attach -acceptlicense` does not exist on current macOS, so there is
+  no supported way to accept it non-interactively.
+- **NSIS** — the same key inserts `MUI_PAGE_LICENSE` into the Windows
+  installers. With the key unset, no licence page is shown.
+- **WiX** — unused here (both Windows jobs are NSIS-only).
+
+MIT is a grant, not a contract that needs assent: its only condition is that
+the copyright/permission notice travels with copies, which the `resources`
+list (and the `deb.files` / `appimage.files` / `generate-rpm` maps) already
+guarantees — `LICENSE` and `THIRD-PARTY-NOTICES.md` sit inside the `.app`, the
+`.dmg`, the `-setup.exe`, the `.deb`, the `.rpm` and the AppImage. The EULA
+bought nothing and broke unattended mounts, so it is off. The macOS
+verification step in `build.yml` still mounts the image with no TTY, which
+doubles as the regression guard: an explicit `hdiutil udifderez` check reports
+an embedded agreement with the real cause, and re-adding `license-file` makes
+the attach fail again.
+
 ## Windows file association
 
 The same table is rendered once per extension into the NSIS installer
@@ -290,7 +319,10 @@ attachments alone do not satisfy that, so:
   through the top-level `resources` list: cargo-packager copies them into
   `Contents/Resources` in the `.app` (and therefore the `.dmg`) and next to the
   executable on Windows. On `.deb` this also duplicates them under
-  `usr/lib/<binary>/licenses/`, which is harmless;
+  `usr/lib/<binary>/licenses/`, which is harmless. No click-through EULA is
+  embedded in the `.dmg` and NSIS shows no licence page, because `license-file`
+  is deliberately unset (see above); this resource copy is what satisfies MIT's
+  notice condition;
 - every GitHub Release attaches only the installers plus `SHA256SUMS.txt`. The
   texts above still travel *inside* every package (which is what the OFL
   requires); they are just no longer attached as loose files on the release
@@ -443,6 +475,11 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   step fails in seconds. Both cases are caught by the `.DS_Store` verification
   step before any artifact is uploaded; validate the pair with the
   **Packaging smoke** workflow on a macOS runner before tagging.
+- macOS `.dmg` EULA: re-adding `license-file` to `[package.metadata.packager]`
+  embeds a click-through agreement and breaks every headless mount. The
+  `udifderez` check plus the TTY-less `hdiutil attach` in the `.DS_Store`
+  verification step catch it before upload (see "Why the `.dmg` has no
+  click-through licence agreement (EULA)").
 - File associations are only provable on real installers: NSIS registry writes
   (and the leftover `.rif` keys on uninstall, see above), macOS Launch Services
   registration of `CFBundleDocumentTypes` (a quarantined or relocated `.app`

@@ -73,14 +73,29 @@ icons = [
     "assets/icon/icon.ico",
     "assets/linux/mikrotik-rif-512.png",
 ]
-license-file = "LICENSE"
+# `license-file` is deliberately unset. In cargo-packager 0.11.8 that key makes
+# the DMG embed a click-through licence agreement (create-dmg `--eula` ->
+# `hdiutil udifrez`, i.e. LPic/TEXT resources) and the NSIS installer show a
+# licence page (MUI_PAGE_LICENSE). An EULA-bearing .dmg prints the licence and
+# waits for "yes" on every `hdiutil attach`; with no TTY (CI, install scripts,
+# `hdiutil attach </dev/null`) hdiutil reads EOF and aborts with
+# "hdiutil: attach canceled", which failed the macOS packaging job in run
+# 34793505291 at its `.DS_Store` verification step. `hdiutil attach
+# -acceptlicense` does not exist on current macOS, so there is no supported
+# non-interactive acceptance. MIT is a grant, not a contract that needs assent:
+# its only condition is that the notice travels with copies, satisfied by
+# `resources` below (the same LICENSE ships inside every artifact), so the
+# click-through is off on purpose. Re-adding this key also drops the NSIS
+# licence page and, for the `.dmg`, requires the build.yml verification step to
+# feed `y` into hdiutil -- a product/legal decision, not a CI-side fix.
 
 # The MIT notice and the three font licence texts have to travel inside every
 # artifact, not only in the source tree. cargo-packager copies these into
 # Contents/Resources on macOS and next to the executable on Windows, so the
-# .app/.dmg and the -setup.exe carry them too. On .deb they additionally
-# land under usr/lib/<binary>/licenses/, which is harmless duplication of the
-# conventional /usr/share/licenses/ entries below.
+# .app/.dmg and the -setup.exe carry them too -- and, with no EULA embedded,
+# this is the *only* copy of LICENSE inside those two artifacts. On .deb they
+# additionally land under usr/lib/<binary>/licenses/, which is harmless
+# duplication of the conventional /usr/share/licenses/ entries below.
 resources = [
     { src = "LICENSE", target = "licenses/LICENSE" },
     { src = "THIRD-PARTY-NOTICES.md", target = "licenses/THIRD-PARTY-NOTICES.md" },
@@ -179,8 +194,8 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 # app_folder_position }`, `rename_all = "camelCase"`, `deny_unknown_fields`):
 #   * `background` (png/jpg/gif) is resolved as `current_dir().join(p)` in
 #     `crates/packager/src/package/dmg/mod.rs`, i.e. relative to the repo root
-#     when `cargo packager` runs there — same as `license-file`. It is passed
-#     to the create-dmg script via `--background`.
+#     when `cargo packager` runs there — the same resolution the `resources`
+#     `src` paths use. It is passed to the create-dmg script via `--background`.
 #   * `window-size` / `app-position` are verified serde aliases; the window
 #     defaults to 600x400 and the icons to app (180, 170) / folder (480, 170)
 #     when unset (`src/package/dmg/mod.rs`). Values below pin the defaults for
