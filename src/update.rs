@@ -707,6 +707,6 @@ mod net;
 mod tests;
 
 #[cfg(target_os = "linux")]
-pub use handoff::{maybe_self_replace, replace_running_appimage};
+pub use handoff::maybe_self_replace;
 pub use handoff::{open_release_page, perform_handoff, running_appimage};
 pub use net::{asset_dest, spawn_check, spawn_download};
