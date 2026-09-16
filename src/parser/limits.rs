@@ -16,6 +16,14 @@ pub struct CaptureLimits {
     /// Maximum size, in bytes, of one decompressed part.
     pub max_part_bytes: usize,
 
+    /// Maximum total transcoded bytes accepted across all parts of one capture.
+    ///
+    /// Every part body is transcoded before its label is known, so a capture
+    /// made of many individually small parts could still exhaust memory. This
+    /// budget caps their sum; [`crate::parser::error::RifError::BudgetExceeded`]
+    /// aborts indexing once it would be crossed.
+    pub max_total_payload_bytes: usize,
+
     /// Maximum length of a single container line.
     pub max_line_bytes: usize,
 
@@ -32,6 +40,7 @@ impl Default for CaptureLimits {
             max_parts: 100_000,
             max_span_bytes: 128 * 1024 * 1024,
             max_part_bytes: 256 * 1024 * 1024,
+            max_total_payload_bytes: 512 * 1024 * 1024,
             max_line_bytes: 64 * 1024 * 1024,
             strict_markers: false,
             strict_labels: false,

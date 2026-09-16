@@ -81,12 +81,42 @@ fn unpack_group(group: &[u8], base: usize) -> Result<[u8; BYTES_PER_GROUP], RifE
 /// Fails when the symbol count is not a multiple of four or when a byte is not
 /// part of the alphabet.
 pub fn unpack(body: &[u8]) -> Result<Vec<u8>, RifError> {
+    unpack_capped(body, usize::MAX)
+}
+
+/// Decode a part body exactly like [`unpack`], but refuse to produce more than
+/// `budget` raw bytes.
+///
+/// The symbol stream is counted before anything is allocated, so the output
+/// buffer is reserved once at its exact size and the budget is enforced before
+/// any large allocation happens. Alignment is therefore validated up front
+/// rather than when the trailing partial group is reached.
+///
+/// # Errors
+///
+/// Fails with [`RifError::BudgetExceeded`] when the decoded output would hold
+/// more than `budget` bytes, plus every [`unpack`] failure mode.
+pub fn unpack_capped(body: &[u8], budget: usize) -> Result<Vec<u8>, RifError> {
+    let symbols = body
+        .iter()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .count();
+    if symbols % SYMBOLS_PER_GROUP != 0 {
+        return Err(RifError::SymbolCountUnaligned {
+            symbols,
+            group: SYMBOLS_PER_GROUP,
+        });
+    }
+    let decoded_len = symbols / SYMBOLS_PER_GROUP * BYTES_PER_GROUP;
+    if decoded_len > budget {
+        return Err(RifError::BudgetExceeded { limit: budget });
+    }
+
     let mut symbols = body
         .iter()
         .copied()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .peekable();
-    let mut out = Vec::new();
+        .filter(|byte| !byte.is_ascii_whitespace());
+    let mut out = Vec::with_capacity(decoded_len);
     let mut base = 0usize;
 
     loop {
@@ -104,12 +134,8 @@ pub fn unpack(body: &[u8]) -> Result<Vec<u8>, RifError> {
         if filled == 0 {
             break;
         }
-        if filled < SYMBOLS_PER_GROUP {
-            return Err(RifError::SymbolCountUnaligned {
-                symbols: base + filled,
-                group: SYMBOLS_PER_GROUP,
-            });
-        }
+        // Alignment was validated up front, so every trailing group is full.
+        debug_assert_eq!(filled, SYMBOLS_PER_GROUP, "symbol count was checked above");
         out.extend_from_slice(&unpack_group(&group, base)?);
         base += SYMBOLS_PER_GROUP;
     }
@@ -187,6 +213,23 @@ mod tests {
         assert_eq!(
             unpack(&spaced).expect("spaced input must unpack"),
             unpack(&packed).unwrap()
+        );
+    }
+
+    #[test]
+    fn capped_decoding_enforces_the_budget_before_allocating() {
+        let packed = pack(b"routeros!");
+        let decoded_len = unpack(&packed).expect("fixture must decode").len();
+        let error = unpack_capped(&packed, decoded_len - 1).expect_err("budget must trip");
+        assert!(matches!(
+            error,
+            RifError::BudgetExceeded { limit } if limit == decoded_len - 1
+        ));
+        assert_eq!(
+            unpack_capped(&packed, decoded_len)
+                .expect("exact budget must decode")
+                .len(),
+            decoded_len
         );
     }
 

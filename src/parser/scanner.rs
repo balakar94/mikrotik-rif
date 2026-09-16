@@ -14,6 +14,26 @@ pub const OPEN_MARKER: &[u8] = b"--BEGIN ROUTEROS SUPOUT SECTION";
 /// Closes a part body.
 pub const CLOSE_MARKER: &[u8] = b"--END ROUTEROS SUPOUT SECTION";
 
+/// Maximum structural notes retained per scan.
+///
+/// A hostile file could otherwise pile up one note per line and exhaust
+/// memory through the notes vector alone. Oddities past this cap are counted
+/// but dropped.
+const MAX_NOTES: usize = 1000;
+
+/// Record a structural oddity, keeping at most [`MAX_NOTES`] entries.
+///
+/// `seen` counts every oddity — including the dropped ones — independently of
+/// how many entries the caller pre-loaded into `notes`, so the cap stays exact
+/// even for a reused buffer.
+#[inline]
+fn push_note(notes: &mut Vec<ContainerNote>, seen: &mut usize, note: ContainerNote) {
+    *seen += 1;
+    if notes.len() < MAX_NOTES {
+        notes.push(note);
+    }
+}
+
 /// Byte range of one part body inside the capture buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartSpan {
@@ -99,6 +119,7 @@ pub fn locate_parts(
     let mut cursor = 0usize;
     let mut open: Option<usize> = None;
     let mut last_close_line_end: Option<usize> = None;
+    let mut notes_seen = 0usize;
 
     while cursor < source.len() {
         let (line, line_end) = read_line(source, cursor);
@@ -112,7 +133,11 @@ pub fn locate_parts(
         let content = trim_ascii(line);
         if content == OPEN_MARKER {
             if open.is_some() {
-                notes.push(ContainerNote::NestedOpen { offset: cursor });
+                push_note(
+                    notes,
+                    &mut notes_seen,
+                    ContainerNote::NestedOpen { offset: cursor },
+                );
                 if limits.strict_markers {
                     return Err(RifError::NestedOpen { offset: cursor });
                 }
@@ -121,8 +146,18 @@ pub fn locate_parts(
         } else if content == CLOSE_MARKER {
             if let Some(start) = open.take() {
                 spans.push(PartSpan { start, end: cursor });
+                if spans.len() > limits.max_parts {
+                    return Err(RifError::TooManyParts {
+                        found: spans.len(),
+                        limit: limits.max_parts,
+                    });
+                }
             } else {
-                notes.push(ContainerNote::StrayClose { offset: cursor });
+                push_note(
+                    notes,
+                    &mut notes_seen,
+                    ContainerNote::StrayClose { offset: cursor },
+                );
                 if limits.strict_markers {
                     return Err(RifError::StrayClose { offset: cursor });
                 }
@@ -143,12 +178,20 @@ pub fn locate_parts(
     if let Some(tail) = last_close_line_end {
         let rest = &source[(tail + 1).min(source.len())..];
         if let Some(offset) = rest.iter().position(|byte| !byte.is_ascii_whitespace()) {
-            notes.push(ContainerNote::TrailingText {
-                offset: tail + 1 + offset,
-            });
+            push_note(
+                notes,
+                &mut notes_seen,
+                ContainerNote::TrailingText {
+                    offset: tail + 1 + offset,
+                },
+            );
         }
     }
 
+    debug_assert!(
+        notes_seen >= notes.len(),
+        "every stored note was counted when seen"
+    );
     Ok(spans)
 }
 
@@ -247,6 +290,57 @@ mod tests {
         let error = locate_parts(&source, &CaptureLimits::default(), &mut Vec::new())
             .expect_err("open part must be reported");
         assert!(matches!(error, RifError::UnterminatedPart { .. }));
+    }
+
+    #[test]
+    fn part_count_budget_aborts_the_scan_early() {
+        let source = body(&["AAAA", "BBBB", "CCCC"]);
+        let limits = CaptureLimits {
+            max_parts: 2,
+            ..CaptureLimits::default()
+        };
+        let error = locate_parts(&source, &limits, &mut Vec::new()).expect_err("budget must trip");
+        assert!(matches!(
+            error,
+            RifError::TooManyParts { found: 3, limit: 2 }
+        ));
+    }
+
+    #[test]
+    fn notes_are_capped_while_scanning_continues() {
+        let mut source = Vec::new();
+        for _ in 0..1500 {
+            source.extend_from_slice(CLOSE_MARKER);
+            source.push(b'\n');
+        }
+        let mut notes = Vec::new();
+        let spans = locate_parts(&source, &CaptureLimits::default(), &mut notes)
+            .expect("stray closes must not abort");
+        assert!(spans.is_empty());
+        assert_eq!(notes.len(), 1000, "notes must stop growing at the cap");
+        assert!(
+            notes
+                .iter()
+                .all(|note| matches!(note, ContainerNote::StrayClose { .. }))
+        );
+    }
+
+    #[test]
+    fn a_hundred_thousand_spans_trip_the_default_budget() {
+        let one = body(&["AAAA"]);
+        let mut source = Vec::with_capacity(one.len() * 100_001);
+        for _ in 0..100_001 {
+            source.extend_from_slice(&one);
+        }
+        let error = locate_parts(&source, &CaptureLimits::default(), &mut Vec::new())
+            .expect_err("default part budget must trip");
+        assert!(matches!(
+            error,
+            RifError::TooManyParts {
+                found: 100_001,
+                limit: 100_000
+            }
+        ));
     }
 
     #[test]

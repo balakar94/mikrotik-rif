@@ -117,10 +117,25 @@ pub enum RifError {
         limit: usize,
     },
 
+    /// The transcoded part payloads would exceed the configured total budget.
+    #[error("decoded payloads grew beyond the {limit}-byte total budget")]
+    BudgetExceeded {
+        /// Configured total budget.
+        limit: usize,
+    },
+
     /// The payload is not a valid zlib stream.
     #[error("payload is not a valid zlib stream")]
     Deflate {
         /// Underlying zlib/IO failure.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The capture stream could not be buffered for indexing.
+    #[error("cannot buffer the capture stream")]
+    StreamRead {
+        /// Underlying IO failure.
         #[source]
         source: std::io::Error,
     },
