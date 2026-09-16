@@ -45,15 +45,19 @@ label-modules = Modules
 label-line-numbers = Line numbers
 label-no-capture = no capture
 label-compressed = { $size } compressed
+# Translator note: { $position } is the filtered count, { $total } is the total module count.
 label-counter = { $position } / { $total }
 label-copy-suffix = · copy { $count }
+# Translator note: { $position } is the current match, { $total } is the total match count.
 label-find-counter = { $position } / { $total }
 empty-selection = Pick a module on the left to see its content
 empty-filter = No modules match your search
+empty-no-readable = No readable modules in this capture
 
 ## Input hints
 hint-filter = Filter modules
-hint-find = text in this module
+hint-find = Text in this module
+hint-find-keys = Enter next · Shift+Enter prev · Esc close
 
 ## Buttons
 button-open = Open…
@@ -68,6 +72,10 @@ button-find = Search in this module
 ## Errors and module state
 module-unreadable = This module could not be indexed.
 error-open = Could not open { $path }: { $reason }
+error-open-unreadable = Cannot read the file: { $detail }
+error-open-dir = Is a directory, not a file
+error-open-not-file = Not a regular file
+error-open-large = File too large (>512 MiB)
 error-module = Could not read module { $index }: { $reason }
 error-save = Could not save: { $reason }
 

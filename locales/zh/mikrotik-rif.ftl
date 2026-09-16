@@ -40,10 +40,12 @@ label-copy-suffix = · 副本 { $count }
 label-find-counter = { $position } / { $total }
 empty-selection = 在左侧选择一个模块以查看其内容
 empty-filter = 没有模块符合你的搜索
+empty-no-readable = 此支持包中没有可读模块
 
 ## 输入提示
 hint-filter = 筛选模块
 hint-find = 在此模块中搜索文本
+hint-find-keys = 回车下一个 · Shift+回车上一个 · Esc 关闭
 
 ## 按钮
 button-open = 打开…
@@ -58,6 +60,10 @@ button-find = 在此模块中搜索
 ## 错误与模块状态
 module-unreadable = 无法索引此模块。
 error-open = 无法打开 { $path }：{ $reason }
+error-open-unreadable = 无法读取文件：{ $detail }
+error-open-dir = 这是一个目录，不是文件
+error-open-not-file = 不是常规文件
+error-open-large = 文件过大（>512 MiB）
 error-module = 无法读取模块 { $index }：{ $reason }
 error-save = 无法保存：{ $reason }
 

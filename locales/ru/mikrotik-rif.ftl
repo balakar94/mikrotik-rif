@@ -52,10 +52,12 @@ label-copy-suffix = · копия { $count }
 label-find-counter = { $position } / { $total }
 empty-selection = Выберите модуль слева, чтобы увидеть его содержимое
 empty-filter = Ни один модуль не соответствует запросу
+empty-no-readable = В этом дампе нет читаемых модулей
 
 ## Подсказки ввода
 hint-filter = Фильтр модулей
-hint-find = текст в этом модуле
+hint-find = Текст в этом модуле
+hint-find-keys = Enter далее · Shift+Enter назад · Esc закрыть
 
 ## Кнопки
 button-open = Открыть…
@@ -70,6 +72,10 @@ button-find = Поиск в этом модуле
 ## Ошибки и состояние модуля
 module-unreadable = Не удалось проиндексировать этот модуль.
 error-open = Не удалось открыть { $path }: { $reason }
+error-open-unreadable = Не удалось прочитать файл: { $detail }
+error-open-dir = Это каталог, а не файл
+error-open-not-file = Не является обычным файлом
+error-open-large = Файл слишком большой (>512 MiB)
 error-module = Не удалось прочитать модуль { $index }: { $reason }
 error-save = Не удалось сохранить: { $reason }
 

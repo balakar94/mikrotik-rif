@@ -49,10 +49,12 @@ label-copy-suffix = · copia { $count }
 label-find-counter = { $position } / { $total }
 empty-selection = Elige un módulo en la lista para ver su contenido
 empty-filter = Ningún módulo coincide con tu búsqueda
+empty-no-readable = No hay módulos legibles en esta captura
 
 ## Pistas de entrada
 hint-filter = Filtrar módulos
-hint-find = texto en este módulo
+hint-find = Texto en este módulo
+hint-find-keys = Enter siguiente · Mayús+Enter anterior · Esc cerrar
 
 ## Botones
 button-open = Abrir…
@@ -67,6 +69,10 @@ button-find = Buscar en este módulo
 ## Errores y estado del módulo
 module-unreadable = Este módulo no se pudo indexar.
 error-open = No se pudo abrir { $path }: { $reason }
+error-open-unreadable = No se pudo leer el archivo: { $detail }
+error-open-dir = Es un directorio, no un archivo
+error-open-not-file = No es un archivo regular
+error-open-large = Archivo demasiado grande (>512 MiB)
 error-module = No se pudo leer el módulo { $index }: { $reason }
 error-save = No se pudo guardar: { $reason }
 

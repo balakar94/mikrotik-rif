@@ -52,10 +52,12 @@ label-copy-suffix = · kopija { $count }
 label-find-counter = { $position } / { $total }
 empty-selection = Izvēlieties moduli kreisajā pusē, lai redzētu tā saturu
 empty-filter = Neviens modulis neatbilst meklēšanai
+empty-no-readable = Šajā uztverē nav lasāmu moduļu
 
 ## Ievades padomi
 hint-filter = Filtrēt moduļus
-hint-find = teksts šajā modulī
+hint-find = Teksts šajā modulī
+hint-find-keys = Enter nākamais · Shift+Enter iepriekšējais · Esc aizvērt
 
 ## Pogas
 button-open = Atvērt…
@@ -70,6 +72,10 @@ button-find = Meklēt šajā modulī
 ## Kļūdas un moduļa stāvoklis
 module-unreadable = Šo moduli nevarēja indeksēt.
 error-open = Nevarēja atvērt { $path }: { $reason }
+error-open-unreadable = Failu nevar nolasīt: { $detail }
+error-open-dir = Ir direktorija, nevis fails
+error-open-not-file = Nav parasts fails
+error-open-large = Fails ir pārāk liels (>512 MiB)
 error-module = Nevarēja nolasīt moduli { $index }: { $reason }
 error-save = Nevarēja saglabāt: { $reason }
 
