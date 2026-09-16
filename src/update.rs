@@ -112,8 +112,6 @@ pub const SIGNATURE_FILE_NAME: &str = "SHA256SUMS.txt.minisig";
 /// Public key embedded at build time (`MIKROTIK_RIF_MINISIGN_PUBKEY`), or empty
 /// when release signing is not configured.
 pub const MINISIGN_PUBLIC_KEY: &str = env!("MIKROTIK_RIF_MINISIGN_PUBKEY");
-/// Longest release-notes excerpt shown in the update banner, in characters.
-pub const MAX_NOTES_CHARS: usize = 280;
 /// `Accept` header sent to the GitHub API.
 const ACCEPT_JSON: &str = "application/vnd.github+json";
 /// Prefix every published release artifact shares; used to anchor asset
@@ -152,8 +150,8 @@ const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ASSETS: usize = 200;
 /// Maximum length accepted for identifier-like JSON fields (tag, URL, name).
 const MAX_FIELD_BYTES: usize = 8 * 1024;
-/// Maximum length accepted for the release-notes body (only 280 characters are
-/// ever displayed, but the JSON is parsed whole).
+/// Maximum length accepted for the release-notes body, parsed whole but
+/// capped so a bloated release cannot blow up the check.
 const MAX_NOTES_BYTES: usize = 256 * 1024;
 /// Longest `ETag` value kept from a response or from storage (2 KiB).
 const MAX_ETAG_BYTES: usize = 2048;
@@ -218,14 +216,6 @@ pub struct ReleaseInfo {
     /// Files attached to the release.
     #[serde(default)]
     pub assets: Vec<AssetInfo>,
-}
-
-impl ReleaseInfo {
-    /// Release notes as plain text (empty when the release has none).
-    #[must_use]
-    pub fn notes(&self) -> &str {
-        self.body.as_deref().unwrap_or("")
-    }
 }
 
 /// Outcome of a background latest-release check.
@@ -696,21 +686,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     out
-}
-
-/// Collapse release notes to a single short line for the update banner.
-///
-/// Whitespace runs become single spaces; longer texts are cut at
-/// [`MAX_NOTES_CHARS`] characters with an ellipsis.
-#[must_use]
-pub fn summarize_notes(notes: &str) -> String {
-    let flat = notes.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= MAX_NOTES_CHARS {
-        flat
-    } else {
-        let cut: String = flat.chars().take(MAX_NOTES_CHARS).collect();
-        format!("{cut}…")
-    }
 }
 
 /// One HTTP response, reduced to the fields the updater needs.

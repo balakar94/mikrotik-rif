@@ -197,9 +197,6 @@ pub struct Viewer {
     /// ETag of the last release-metadata response (persisted), so a repeated
     /// check can answer `304` instead of consuming the API rate limit.
     update_etag: Option<String>,
-    /// One-line summary of the offered release's notes (collapsed once, when
-    /// the release is stored, instead of every frame).
-    update_summary: String,
     /// Background check state machine (at most one check runs at a time).
     check: CheckState,
     /// Background download state machine.
@@ -258,7 +255,6 @@ impl Viewer {
             update_error: None,
             update_up_to_date: None,
             update_etag: None,
-            update_summary: String::new(),
             check: CheckState::Idle,
             download: DownloadState::Idle,
             update_download: None,
@@ -726,6 +722,7 @@ impl Viewer {
             self.settings_access(ctx);
         }
         self.settings_modal(ctx);
+        self.changelog_window(ctx);
         self.draw_fade(ctx, palette);
         self.panic_dialog(ctx);
     }

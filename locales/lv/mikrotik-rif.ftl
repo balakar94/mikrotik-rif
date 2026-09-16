@@ -121,6 +121,7 @@ update-retry = Mēģināt vēlreiz
 update-open-page = Atvērt laidiena lapu
 update-never-checked = Vēl nav pārbaudīts
 update-last-checked = Pēdējoreiz pārbaudīts { $when }
+update-changelog = Jaunumi
 time-just-now = tikko
 time-minutes-ago = pirms { $count } min
 time-hours-ago = pirms { $count } st

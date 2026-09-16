@@ -313,22 +313,6 @@ fn verified_files_are_kept_and_bad_ones_deleted() {
 }
 
 #[test]
-fn notes_are_collapsed_and_capped() {
-    assert_eq!(summarize_notes(""), "");
-    assert_eq!(
-        summarize_notes("  line one\nline   two  "),
-        "line one line two"
-    );
-    let long = "w ".repeat(MAX_NOTES_CHARS);
-    let summary = summarize_notes(&long);
-    assert!(summary.ends_with('…'), "long notes are marked as cut");
-    assert!(
-        summary.chars().count() <= MAX_NOTES_CHARS + 1,
-        "notes stay within budget"
-    );
-}
-
-#[test]
 fn auto_check_follows_the_toggle() {
     assert!(should_auto_check(true), "on by default");
     assert!(!should_auto_check(false), "opt-out wins");

@@ -109,6 +109,7 @@ update-retry = 重试
 update-open-page = 打开发布页面
 update-never-checked = 尚未检查
 update-last-checked = 上次检查：{ $when }
+update-changelog = 更新日志
 time-just-now = 刚刚
 time-minutes-ago = { $count } 分钟前
 time-hours-ago = { $count } 小时前

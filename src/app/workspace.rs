@@ -306,17 +306,10 @@ impl Viewer {
                 {
                     self.copy_body(ui.ctx());
                 }
-                // Gutter toggle: icon-only is hover-only (`on_hover_text` in
-                // icons.rs reports no button role/name to assistive tech), so
-                // show the localized "Line numbers" text as a real toggle
-                // button when there is room, falling back to the icon in the
-                // same spot on narrow widths. `Button::selectable` exposes
-                // toggle semantics and the visible name to AT/keyboard focus.
-                let gutter_clicked = if ui.available_width() > 360.0 {
-                    ui.add(egui::Button::selectable(self.gutter, &line_numbers).small())
-                        .on_hover_text(&line_numbers)
-                        .clicked()
-                } else if icons::icon_button(
+                // Gutter toggle: sidebar icon only, as everywhere else in
+                // the header. The localized name travels as hover text
+                // (see icons.rs for the egui 0.36 limitation).
+                if icons::icon_button(
                     ui,
                     &palette,
                     icons::Glyph::PanelLeft,
@@ -324,16 +317,6 @@ impl Viewer {
                     true,
                     &line_numbers,
                 ) {
-                    true
-                } else {
-                    // Keep the accessible name perceivable even in icon mode:
-                    // a focused screen-reader user still gets the tooltip text
-                    // via the icon's hover text, while sighted keyboard users
-                    // see the focus ring. The wide layout above is the fully
-                    // perceivable variant.
-                    false
-                };
-                if gutter_clicked {
                     self.gutter = !self.gutter;
                 }
                 if icons::icon_button(

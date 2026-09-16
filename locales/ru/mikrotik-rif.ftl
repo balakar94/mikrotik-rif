@@ -121,6 +121,7 @@ update-retry = Повторить попытку
 update-open-page = Открыть страницу выпуска
 update-never-checked = Ещё не проверялось
 update-last-checked = Последняя проверка { $when }
+update-changelog = Что нового
 time-just-now = только что
 time-minutes-ago = { $count } мин назад
 time-hours-ago = { $count } ч назад

@@ -22,6 +22,10 @@ use crate::update;
 
 use super::UpdateAction;
 
+/// Repository changelog, embedded at compile time so the Updates tab can
+/// show recent changes without another network round-trip.
+const CHANGELOG_MD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/CHANGELOG.md"));
+
 impl Viewer {
     /// Version, build hash and the update check.
     pub(super) fn updates_tab(
@@ -86,6 +90,8 @@ impl Viewer {
         if action.is_none() {
             action = self.update_status(ui, palette);
         }
+
+        self.changelog_button(ui, ctx);
 
         if !checking && let Some(last) = self.update_last_check {
             let when = relative_time(&self.i18n, last, update::now_unix());
@@ -180,13 +186,6 @@ impl Viewer {
             release_args.set("version", release.tag.clone());
             let headline = self.i18n.render("update-available", &release_args);
             ui.label(RichText::new(headline).strong().color(palette.text));
-            if !self.update_summary.is_empty() {
-                ui.label(
-                    RichText::new(self.update_summary.clone())
-                        .size(12.0)
-                        .color(palette.muted),
-                );
-            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui
@@ -220,6 +219,48 @@ impl Viewer {
         action
     }
 
+    /// Button opening the standalone changelog window below.
+    fn changelog_button(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if ui
+            .button(self.i18n.text("update-changelog").as_str())
+            .clicked()
+        {
+            let id = egui::Id::new("changelog-window");
+            ctx.memory_mut(|memory| {
+                let open = memory.data.get_temp::<bool>(id).unwrap_or(false);
+                memory.data.insert_temp(id, !open);
+            });
+        }
+    }
+
+    /// Bundled changelog ("What's new") in its own window, newest first.
+    ///
+    /// Rendered every frame from [`Viewer::overlays`], not from the settings
+    /// tab, so closing settings leaves it open. `Foreground` order keeps it
+    /// above the settings modal. The file is embedded at compile time: no
+    /// network, always available. Visibility lives in egui temp memory, so
+    /// no `Viewer` field is needed.
+    pub(crate) fn changelog_window(&self, ctx: &egui::Context) {
+        let id = egui::Id::new("changelog-window");
+        let mut open = ctx.memory(|memory| memory.data.get_temp::<bool>(id).unwrap_or(false));
+        if !open {
+            return;
+        }
+        let palette = crate::theme::current(ctx);
+        let title = self.i18n.text("update-changelog");
+        egui::Window::new(title)
+            .id(id)
+            .order(egui::Order::Foreground)
+            .default_size([600.0, 480.0])
+            .resizable(true)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    render_changelog(ui, &palette, CHANGELOG_MD);
+                });
+            });
+        ctx.memory_mut(|memory| memory.data.insert_temp(id, open));
+    }
     /// What the install button should say on this platform.
     ///
     /// macOS deliberately only downloads the `.dmg` (the project ships
@@ -269,4 +310,75 @@ fn relative_time(i18n: &i18n::I18n, then: u64, now: u64) -> String {
     } else {
         i18n.count("time-days-ago", seconds / 86_400)
     }
+}
+
+/// Render the bundled changelog with the small markdown subset it uses.
+///
+/// Headings become sized strong labels, `- ` items become bullets, blank
+/// lines become spacing; everything else is plain body copy. No external
+/// markdown crate for a static file we own.
+fn render_changelog(ui: &mut egui::Ui, palette: &Palette, markdown: &str) {
+    for line in markdown.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            ui.add_space(4.0);
+        } else if let Some(title) = line.strip_prefix("## ") {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(plain_markdown(title))
+                    .strong()
+                    .size(13.0)
+                    .color(palette.text),
+            );
+        } else if let Some(title) = line.strip_prefix("### ") {
+            ui.label(
+                RichText::new(plain_markdown(title))
+                    .strong()
+                    .size(12.0)
+                    .color(palette.text),
+            );
+        } else if let Some(title) = line.strip_prefix("# ") {
+            ui.label(
+                RichText::new(plain_markdown(title))
+                    .strong()
+                    .size(14.0)
+                    .color(palette.text),
+            );
+        } else if let Some(item) = line.strip_prefix("- ") {
+            ui.label(
+                RichText::new(format!("• {}", plain_markdown(item)))
+                    .size(12.0)
+                    .color(palette.text),
+            );
+        } else {
+            ui.label(
+                RichText::new(plain_markdown(line))
+                    .size(12.0)
+                    .color(palette.muted),
+            );
+        }
+    }
+}
+
+/// Strip the inline markdown the changelog uses (`**bold**` markers and
+/// `[text](url)` links) so it reads as plain interface copy.
+fn plain_markdown(line: &str) -> String {
+    let text = line.replace("**", "");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(open) = rest.find('[') {
+        let Some(rel) = rest[open..].find("](") else {
+            break;
+        };
+        let close = open + rel;
+        let Some(rel_end) = rest[close + 2..].find(')') else {
+            break;
+        };
+        let end = close + 2 + rel_end;
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..close]);
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }

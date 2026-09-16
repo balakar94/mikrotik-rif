@@ -108,8 +108,6 @@ impl Viewer {
                 // A skipped tag stays quiet for the automatic check, but an
                 // explicit "Check for updates" still surfaces it.
                 if manual || release.tag != self.update_skipped {
-                    // Collapse the notes once, not once per frame.
-                    self.update_summary = update::summarize_notes(release.notes());
                     self.update_release = Some(*release);
                     self.update_ready = None;
                     self.update_download = None;

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-09-16
+
+### Fixed
+
+- Gutter toggle back to the sidebar icon only; the wide-layout "Line numbers"
+  text button is gone.
+- Removed the raw release-notes excerpt from the Updates tab, which rendered
+  unformatted markdown.
+
+### Added
+
+- Standalone "What's new" window (Settings → Updates) rendering the bundled
+  changelog: resizable, independent of the settings modal, no network needed.
+
 ## [0.4.1] - 2026-09-16
 
 ### Fixed

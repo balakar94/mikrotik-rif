@@ -121,6 +121,7 @@ update-retry = Try again
 update-open-page = Open the release page
 update-never-checked = Not checked yet
 update-last-checked = Last checked { $when }
+update-changelog = What's new
 time-just-now = just now
 time-minutes-ago = { $count } min ago
 time-hours-ago = { $count } h ago

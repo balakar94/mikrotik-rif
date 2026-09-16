@@ -118,6 +118,7 @@ update-retry = Réessayer
 update-open-page = Ouvrir la page de la version
 update-never-checked = Pas encore vérifié
 update-last-checked = Dernière vérification { $when }
+update-changelog = Nouveautés
 time-just-now = à l'instant
 time-minutes-ago = il y a { $count } min
 time-hours-ago = il y a { $count } h
