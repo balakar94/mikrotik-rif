@@ -26,6 +26,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       # One platform/architecture failing must not cancel the others; partial
       # artifacts are still useful for diagnosis.
@@ -34,21 +35,21 @@ jobs:
         include:
           # x86_64 (existing)
           - name: windows x64
-            os: windows-latest
+            os: windows-2025
             arch: x64
             formats: "nsis"
             artifact: release-windows-x64
             files: |
               dist/*.exe
           - name: macos arm64
-            os: macos-latest
+            os: macos-15
             arch: arm64
             formats: "dmg"
             artifact: release-macos-arm64
             files: |
               dist/*.dmg
           - name: linux x64
-            os: ubuntu-latest
+            os: ubuntu-24.04
             arch: x64
             formats: "deb,appimage"
             artifact: release-linux-x64
@@ -123,6 +124,10 @@ jobs:
       # `cargo packager --release`.
       - name: Build release binary
         env:
+          # Commit baked into the binary via build.rs (`MIKROTIK_RIF_GIT_COMMIT`).
+          # `github.sha` keeps the value exact even on a tarball checkout without
+          # `.git`; build.rs falls back to `git rev-parse HEAD` and then `unknown`.
+          MIKROTIK_RIF_COMMIT: ${{ github.sha }}
           # Optional release-signing public key (minisign, base64). Set it as a
           # repository *variable* (public keys are not secret): when present the
           # built binary requires a valid `SHA256SUMS.txt.minisig` on every
@@ -373,3 +378,28 @@ jobs:
           path: ${{ matrix.files }}
           if-no-files-found: error
           retention-days: 7
+
+      # Observability: one per-matrix summary with the toolchain, the exact
+      # commit and the artifact hashes, so a run page answers "what built what".
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Build summary (${{ matrix.name }})"
+            echo ""
+            echo '```'
+            rustc -Vv || true
+            echo "---"
+            git rev-parse HEAD || true
+            echo "---"
+            ls -lh dist || true
+            echo "---"
+            if compgen -G 'dist/*' > /dev/null; then
+              sha256sum dist/* || true
+            else
+              echo "(no dist/* files)"
+            fi
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

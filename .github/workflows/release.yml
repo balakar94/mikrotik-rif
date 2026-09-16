@@ -5,12 +5,19 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Ephemeral minisign round-trip: sign SHA256SUMS.txt with a throwaway key in RUNNER_TEMP, verify with minisign -V, then discard (no publish)"
+        required: false
+        default: false
+        type: boolean
 
-# Required by softprops/action-gh-release to create/update the GitHub Release.
-# The reusable build workflow is capped at contents: read by its call job below,
-# so the broader write grant is not inherited by the build matrix.
+# Default to read-only: each job declares exactly what it needs
+# (`build` caps its reusable call at contents: read; `release` takes its
+# own write trio below for publishing, attestations and OIDC), so no
+# workflow-wide write grant exists for an audit to flag.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,11 +37,18 @@ jobs:
   release:
     name: publish GitHub Release
     needs: build
-    # Only a version tag publishes; workflow_dispatch keeps artifacts only.
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    # Only a version tag publishes; workflow_dispatch keeps artifacts only,
+    # unless the ephemeral-signing dry-run was requested (which also stops
+    # before publishing; see the Publish step condition).
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Gated deploys: `release` must be approved/visible as a GitHub environment.
+    environment: release
     permissions:
       contents: write
+      attestations: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,9 +58,10 @@ jobs:
       # (`mikrotik-rif_<version>_<arch>.<ext>`), so a tag pushed from a tree
       # with a different version would publish a Release whose assets and notes
       # disagree with the tag. Fail before anything is downloaded or uploaded.
-      # Only reached on tags: the job-level `if` above gates this whole job.
+      # Only reached on tags: skipped for the dry-run dispatch (no tag to check).
       # ROLLBACK: delete this step.
       - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +82,17 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # Provenance: CycloneDX SBOM of the release tree, attached alongside the
+      # installers and covered by SHA256SUMS.txt (generated next) and by the
+      # build-provenance attestation below. Pinned install for reproducibility.
+      - name: Generate SBOM (CycloneDX)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-cyclonedx --locked --version 0.5.5
+          cargo cyclonedx --all --format json --output dist/sbom.cdx.json
+          ls -l dist/sbom.cdx.json
 
       - name: Generate SHA256SUMS.txt
         working-directory: dist
@@ -118,6 +144,9 @@ jobs:
       # built with the matching public key (MIKROTIK_RIF_MINISIGN_PUBKEY in
       # build.yml). Use an *unencrypted* minisign secret key: the reference CLI
       # prompts on a terminal and cannot take a password non-interactively.
+      # Configure the variable and the secret TOGETHER (or leave both unset):
+      # a public key without this signing step makes every update fail closed,
+      # while this signing step without the baked-in public key is inert.
       # ROLLBACK: delete the secret (or this step); the release is then unsigned
       # again and any binary built with the public key refuses to update,
       # so remove that variable too.
@@ -132,7 +161,7 @@ jobs:
             exit 0
           fi
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends minisign
+          sudo apt-get install --yes --no-install-recommends "minisign=0.10.*"
           printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${RUNNER_TEMP}/minisign.key"
           chmod 600 "${RUNNER_TEMP}/minisign.key"
           minisign -S -W -s "${RUNNER_TEMP}/minisign.key" -m SHA256SUMS.txt \
@@ -140,10 +169,74 @@ jobs:
           rm -f "${RUNNER_TEMP}/minisign.key"
           ls -l SHA256SUMS.txt.minisig
 
+      # Gate 2b (post-sign): when a detached signature exists, verify it with
+      # the public key from the MIKROTIK_RIF_MINISIGN_PUBKEY *variable* before
+      # anything is published. Unsigned releases (no .minisig) skip silently.
+      # The variable and the secret must be configured together; a mismatch
+      # fails here instead of shipping an unverifiable release.
+      # ROLLBACK: delete this step (the dry-run step below has its own check).
+      - name: Verify SHA256SUMS.txt signature (post-sign gate)
+        working-directory: dist
+        env:
+          MIKROTIK_RIF_MINISIGN_PUBKEY: ${{ vars.MIKROTIK_RIF_MINISIGN_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [ ! -f SHA256SUMS.txt.minisig ]; then
+            echo "No SHA256SUMS.txt.minisig; skipping signature verification."
+            exit 0
+          fi
+          if [ -z "${MIKROTIK_RIF_MINISIGN_PUBKEY:-}" ]; then
+            echo "ERROR: signature exists but MIKROTIK_RIF_MINISIGN_PUBKEY variable is unset;" >&2
+            echo "ERROR: configure the variable and the secret together." >&2
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "minisign=0.10.*"
+          printf '%s\n' "${MIKROTIK_RIF_MINISIGN_PUBKEY}" > "${RUNNER_TEMP}/minisign.pub"
+          minisign -V -p "${RUNNER_TEMP}/minisign.pub" -m SHA256SUMS.txt -x SHA256SUMS.txt.minisig
+          rm -f "${RUNNER_TEMP}/minisign.pub"
+          echo "OK: SHA256SUMS.txt.minisig verifies against MIKROTIK_RIF_MINISIGN_PUBKEY."
+
+      # Minisign dry-run: on `workflow_dispatch` with `dry-run: true`, prove the
+      # sign/verify plumbing without touching the real release. Uses an ephemeral
+      # key pair confined to RUNNER_TEMP, verifies with `minisign -V`, then
+      # discards the keys and the throwaway signature. Never publishes.
+      - name: Minisign dry-run (ephemeral key, verify, discard)
+        if: inputs.dry-run
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "minisign=0.10.*"
+          minisign -G -W -p "${RUNNER_TEMP}/dryrun.pub" -s "${RUNNER_TEMP}/dryrun.key"
+          chmod 600 "${RUNNER_TEMP}/dryrun.key"
+          minisign -S -W -s "${RUNNER_TEMP}/dryrun.key" -m SHA256SUMS.txt \
+            -x "${RUNNER_TEMP}/SHA256SUMS.dryrun.minisig" -t "mikrotik-rif dry-run"
+          minisign -V -p "${RUNNER_TEMP}/dryrun.pub" -m SHA256SUMS.txt \
+            -x "${RUNNER_TEMP}/SHA256SUMS.dryrun.minisig"
+          echo "OK: ephemeral minisign round-trip verified."
+          rm -f "${RUNNER_TEMP}/dryrun.key" "${RUNNER_TEMP}/dryrun.pub" \
+            "${RUNNER_TEMP}/SHA256SUMS.dryrun.minisig"
+          echo "Discarded ephemeral keys and signature; dist/ untouched."
+          ls -l
+
+      # Build-provenance attestation for everything in dist/ (installers, SBOM,
+      # checksums and optional signature). Requires the job-level
+      # `attestations: write` + `id-token: write` permissions above; the build
+      # caller stays at `contents: read` and never attests.
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: "dist/*"
+
       - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true
           body: |
             Desktop viewer for MikroTik RouterOS support captures (`supout.rif`).
 
@@ -185,6 +278,10 @@ jobs:
             sha256sum -c SHA256SUMS.txt
             ```
 
+            The release also attaches `sbom.cdx.json` (CycloneDX SBOM) and carries
+            a build-provenance attestation. When release signing is configured,
+            `SHA256SUMS.txt.minisig` is present and the in-app updater verifies it.
+
             ## First launch (these builds are not code-signed)
 
             No Apple or Windows code-signing certificate is used, so each system
@@ -211,6 +308,7 @@ jobs:
       # NOTE: strict equality; a leftover asset from an earlier run of the same
       # tag would also fail this check. ROLLBACK: delete this step.
       - name: Verify published release assets match SHA256SUMS.txt
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
@@ -229,3 +327,28 @@ jobs:
             exit 1
           fi
           echo "OK: published assets for '${tag}' match SHA256SUMS.txt."
+
+      # Observability: release-page summary with the toolchain, the exact tag
+      # commit and the published hashes, so the run page is self-describing.
+      - name: Release summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release summary"
+            echo ""
+            echo '```'
+            rustc -Vv || true
+            echo "---"
+            git rev-parse HEAD || true
+            echo "---"
+            ls -lh dist || true
+            echo "---"
+            if [ -f dist/SHA256SUMS.txt ]; then
+              cat dist/SHA256SUMS.txt
+            else
+              echo "(no dist/SHA256SUMS.txt)"
+            fi
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

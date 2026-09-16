@@ -24,14 +24,15 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       # A failure on one OS must not hide failures on the others.
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+          - ubuntu-24.04
+          - macos-15
+          - windows-2025
 
     steps:
       - name: Checkout
@@ -81,17 +82,83 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked --all-targets
 
-  deny:
-    name: cargo-deny (advisories + licenses)
-    runs-on: ubuntu-latest
+  msrv:
+    name: msrv (1.95)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libvulkan-dev
+
+      - name: Install Rust 1.95 (MSRV)
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.95"
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: msrv-1.95
+
+      # MSRV gate: the crate declares `rust-version = "1.95"` in Cargo.toml
+      # (the minimum the egui 0.36.2 tree builds with). Day-to-day work uses
+      # the pinned `stable` toolchain in rust-toolchain.toml; newer toolchains
+      # are covered by the `test` matrix above.
+      - name: Check MSRV
+        run: cargo +1.95 check --locked
+
+  package:
+    name: cargo package list (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      # Packaging hygiene: fails when `exclude`/`include` in Cargo.toml drifts
+      # (e.g. a new top-level asset is not shipped) or when the manifest is
+      # otherwise unpackable. No network publish; `--list` only.
+      - name: List package files
+        run: cargo package --list --locked
+
+  deny:
+    name: cargo-deny (advisories + licenses)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # Pinned `cargo install` instead of a third-party cargo-deny action:
       # no extra action attack surface beyond the already-trusted (SHA-pinned)
@@ -120,3 +187,46 @@ jobs:
           cargo fetch --locked
           cargo about generate about.hbs --output-file THIRD-PARTY-NOTICES.md --fail --frozen
           git diff --exit-code -- THIRD-PARTY-NOTICES.md
+
+  zizmor:
+    name: zizmor (workflow audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Gate: fail only on high-severity findings. Lower severities are
+      # still surfaced as annotations for triage, but must not block CI:
+      # the tree carries known pedantic hygiene findings (matrix
+      # expansions in build scripts, artifact credential persistence,
+      # dependabot cooldown) tracked separately.
+      # advanced-security is off on purpose: the SARIF upload needs
+      # security-events: write and fails closed without it.
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          persona: pedantic
+          min-severity: high
+          advanced-security: false
+          annotations: true
+
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Pinned secret scanner; fails when a committed secret is detected.
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

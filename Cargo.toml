@@ -3,10 +3,13 @@ name = "mikrotik-rif"
 description = "MikroTik RIF Viewer — reader for RouterOS supout captures"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT"
+authors = ["balakar94"]
+homepage = "https://github.com/balakar94/mikrotik-rif"
 readme = "README.md"
 repository = "https://github.com/balakar94/mikrotik-rif"
+exclude = ["/target", "/dist", ".github/"]
 
 [[bin]]
 name = "mikrotik-rif"
