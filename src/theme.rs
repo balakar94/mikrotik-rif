@@ -71,9 +71,9 @@ const DARK: Palette = Palette {
     text: Color32::from_rgb(0xE8, 0xEE, 0xF4),
     muted: Color32::from_rgb(0x95, 0xA3, 0xB2),
     danger: Color32::from_rgb(0xF8, 0x71, 0x71),
-    paper: Color32::from_rgb(0xE9, 0xEF, 0xF5),
-    paper_dim: Color32::from_rgb(0xB9, 0xC6, 0xD4),
-    paper_line: Color32::from_rgb(0xC4, 0xCF, 0xDB),
+    paper: Color32::from_rgb(0x1A, 0x24, 0x30),
+    paper_dim: Color32::from_rgb(0x2A, 0x36, 0x44),
+    paper_line: Color32::from_rgb(0x3A, 0x4A, 0x5C),
 };
 
 const LIGHT: Palette = Palette {
@@ -169,6 +169,11 @@ pub fn apply(ctx: &Context) {
         ] {
             widget.corner_radius = CornerRadius::same(9);
         }
+        // Visible keyboard focus in both themes: keep the per-theme accent
+        // colour set in `visuals()` and widen the ring so Tab focus is
+        // distinguishable from hover. `selection.stroke` is what egui uses
+        // for the focus outline.
+        style.visuals.selection.stroke.width = 2.0;
     });
 }
 
@@ -241,7 +246,7 @@ fn visuals(palette: Palette, dark: bool) -> egui::Visuals {
     visuals.selection.bg_fill = palette
         .accent
         .linear_multiply(if dark { 0.45 } else { 0.24 });
-    visuals.selection.stroke = Stroke::new(1.0, palette.accent);
+    visuals.selection.stroke = Stroke::new(2.0, palette.accent);
 
     visuals.widgets.noninteractive.bg_fill = palette.panel;
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette.text);
@@ -251,9 +256,15 @@ fn visuals(palette: Palette, dark: bool) -> egui::Visuals {
     visuals.widgets.hovered.bg_fill = palette.card_hover;
     visuals.widgets.hovered.weak_bg_fill = palette.card_hover;
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, palette.text);
-    visuals.widgets.active.bg_fill = palette.accent_dim;
-    visuals.widgets.active.weak_bg_fill = palette.accent_dim;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, palette.text);
+    // Pressed state uses the full accent with on-accent text so it passes
+    // WCAG AA in both themes and stays clearly distinct from the
+    // `card_hover` hover/open states.
+    visuals.widgets.active.bg_fill = palette.accent;
+    visuals.widgets.active.weak_bg_fill = palette.accent;
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, palette.on_accent);
+    visuals.widgets.open.bg_fill = palette.card_hover;
+    visuals.widgets.open.weak_bg_fill = palette.card_hover;
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0, palette.text);
     visuals
 }
 

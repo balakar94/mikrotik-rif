@@ -17,6 +17,10 @@ pub enum Glyph {
     ChevronUp,
     /// Chevron pointing down.
     ChevronDown,
+    /// Chevron pointing left (rail open, click to collapse).
+    ChevronLeft,
+    /// Chevron pointing right (rail collapsed, click to expand).
+    ChevronRight,
     /// Cross used to clear or close.
     Close,
     /// A rectangle with a highlighted side column, for the module rail.
@@ -70,7 +74,7 @@ pub fn icon_button_ext(
         Color32::TRANSPARENT
     };
     let color = if !enabled {
-        palette.muted.linear_multiply(0.45)
+        palette.muted.linear_multiply(0.65)
     } else if selected {
         palette.accent
     } else if hovered {
@@ -82,6 +86,11 @@ pub fn icon_button_ext(
     let painter = ui.painter();
     if background != Color32::TRANSPARENT {
         painter.rect_filled(rect, 7.0, background);
+    }
+    // Shape cue beyond colour: disabled buttons keep a thin outline so the
+    // state does not rely on hue/luminance alone.
+    if !enabled {
+        painter.rect_stroke(rect, 7.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
     }
     draw(painter, rect.center(), glyph, color, selected);
 
@@ -95,6 +104,8 @@ pub fn icon_button_ext(
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    // egui 0.36 exposes no `accessible_label` on `Response`, so the tooltip
+    // stays as the accessible name source.
     response.on_hover_text(hint).clicked() && enabled
 }
 
@@ -124,6 +135,16 @@ fn draw(painter: &Painter, center: Pos2, glyph: Glyph, color: Color32, selected:
             let point = |x: f32, y: f32| center + Vec2::new(x, y);
             painter.line_segment([point(-4.2, -1.6), point(0.0, 2.6)], stroke);
             painter.line_segment([point(0.0, 2.6), point(4.2, -1.6)], stroke);
+        }
+        Glyph::ChevronLeft => {
+            let point = |x: f32, y: f32| center + Vec2::new(x, y);
+            painter.line_segment([point(1.6, -4.2), point(-2.6, 0.0)], stroke);
+            painter.line_segment([point(-2.6, 0.0), point(1.6, 4.2)], stroke);
+        }
+        Glyph::ChevronRight => {
+            let point = |x: f32, y: f32| center + Vec2::new(x, y);
+            painter.line_segment([point(-1.6, -4.2), point(2.6, 0.0)], stroke);
+            painter.line_segment([point(2.6, 0.0), point(-1.6, 4.2)], stroke);
         }
         Glyph::Close => {
             let point = |x: f32, y: f32| center + Vec2::new(x, y);

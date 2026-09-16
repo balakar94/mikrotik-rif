@@ -33,6 +33,7 @@ use self::update_ui::{CheckState, DownloadState};
 use self::workspace::{
     FindState, human_size_u64, line_starts, max_line_length, sanitize, to_number, units,
 };
+use crate::worker::MAX_CAPTURE_BYTES;
 
 /// Minimum seconds the opening animation stays on screen.
 const SCAN_MIN_SECONDS: f64 = 2.4;
@@ -71,6 +72,60 @@ struct Notice {
     is_error: bool,
 }
 
+/// Why a capture path was rejected before indexing.
+///
+/// The variant maps to a Fluent `error-open-*` message so the UI can render
+/// a localized `$reason` for `error-open` instead of embedding hardcoded
+/// English. `Unreadable` keeps the OS error text (not translated) as the
+/// `{ $detail }` placeable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InputError {
+    /// `std::fs::metadata` failed; holds the OS error text.
+    Unreadable(String),
+    /// The path is a directory, not a file.
+    IsDir,
+    /// The path exists but is not a regular file.
+    NotFile,
+    /// Larger than [`MAX_CAPTURE_BYTES`].
+    TooLarge,
+}
+
+/// Validate a capture path before queuing it for indexing.
+///
+/// Returns `Ok` when the file can be opened, `Err(InputError)` otherwise.
+/// A non-`.rif` extension is only a warning at the dialog level, so it
+/// still validates here.
+pub(crate) fn validate_input_path(path: &Path) -> Result<(), InputError> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| InputError::Unreadable(error.to_string()))?;
+    if metadata.is_dir() {
+        return Err(InputError::IsDir);
+    }
+    if !metadata.is_file() {
+        return Err(InputError::NotFile);
+    }
+    if metadata.len() > MAX_CAPTURE_BYTES {
+        return Err(InputError::TooLarge);
+    }
+    Ok(())
+}
+
+/// Validate a persisted update-check ETag.
+///
+/// Accepts the value when it is non-empty, at most 2048 bytes and only
+/// printable ASCII (`0x20..=0x7E`, which already excludes `\r` and `\n`);
+/// anything else is discarded as `None` so a corrupt storage entry never
+/// reaches the network layer.
+pub(crate) fn sanitize_etag_value(value: &str) -> Option<String> {
+    if value.is_empty() || value.len() > 2048 {
+        return None;
+    }
+    if !value.bytes().all(|byte| (0x20..=0x7E).contains(&byte)) {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
 /// Application state.
 pub struct Viewer {
     worker: Worker,
@@ -101,6 +156,9 @@ pub struct Viewer {
     match_cursor: usize,
     scroll_to_line: Option<usize>,
     pending_expand: Option<usize>,
+    /// Monotonic sequence for expansion requests; lets the worker drop stale
+    /// arrivals when the user moves quickly between modules.
+    expand_seq: u64,
     busy: Option<String>,
     notice: Option<Notice>,
     gutter: bool,
@@ -181,6 +239,7 @@ impl Viewer {
             match_cursor: 0,
             scroll_to_line: None,
             pending_expand: None,
+            expand_seq: 0,
             busy: None,
             notice: None,
             gutter: true,
@@ -206,6 +265,11 @@ impl Viewer {
         };
 
         viewer.restore_prefs(cc.storage, &cc.egui_ctx);
+        // Discard a corrupt persisted ETag instead of sending it to the network.
+        viewer.update_etag = viewer
+            .update_etag
+            .take()
+            .and_then(|value| sanitize_etag_value(&value));
 
         if let Some(argument) = std::env::args_os().nth(1) {
             viewer.start_scan(PathBuf::from(argument));
@@ -228,8 +292,35 @@ impl Viewer {
         self.i18n.render(id, &args)
     }
 
+    /// Localized `$reason` for `error-open` from an [`InputError`].
+    fn input_reason(&self, error: &InputError) -> String {
+        match error {
+            InputError::Unreadable(detail) => {
+                let mut args = FluentArgs::new();
+                args.set("detail", detail.clone());
+                self.i18n.render("error-open-unreadable", &args)
+            }
+            InputError::IsDir => self.i18n.text("error-open-dir"),
+            InputError::NotFile => self.i18n.text("error-open-not-file"),
+            InputError::TooLarge => self.i18n.text("error-open-large"),
+        }
+    }
+
+    /// Full `error-open` message for a path rejected by validation.
+    fn open_error(&self, path: &Path, error: &InputError) -> String {
+        let reason = self.input_reason(error);
+        self.message_with_path("error-open", path, &reason)
+    }
+
     /// Enter the opening animation and queue the capture for reading.
     fn start_scan(&mut self, path: PathBuf) {
+        if let Err(error) = validate_input_path(&path) {
+            self.stage = Stage::Home;
+            self.fade_at = Some(self.last_time);
+            let message = self.open_error(&path, &error);
+            self.home_error = Some(message);
+            return;
+        }
         self.stage = Stage::Scanning;
         self.fade_at = Some(self.last_time);
         self.home_error = None;
@@ -248,7 +339,8 @@ impl Viewer {
         self.scan_started = self.last_time;
         self.scan_min_until = Some(self.last_time + SCAN_MIN_SECONDS);
         self.source = Some(path.clone());
-        self.worker.index(path);
+        self.worker.cancel();
+        self.worker.index_with_limits(path, self.limits);
     }
 
     /// Ask the worker to expand a module.
@@ -258,7 +350,10 @@ impl Viewer {
         };
         self.pending_expand = Some(index);
         self.busy = Some(self.i18n.text("status-decoding"));
-        self.worker.expand(capture, index, self.limits);
+        self.expand_seq = self.expand_seq.wrapping_add(1);
+        let seq = self.expand_seq;
+        self.worker
+            .expand_with_seq(capture, index, self.limits, seq);
     }
 
     /// Select a module and expand it.
@@ -375,6 +470,13 @@ impl Viewer {
             .set_title(title)
             .pick_file()
         {
+            if let Err(error) = validate_input_path(&path) {
+                self.stage = Stage::Home;
+                self.fade_at = Some(self.last_time);
+                let message = self.open_error(&path, &error);
+                self.home_error = Some(message);
+                return;
+            }
             self.start_scan(path);
         }
     }
@@ -390,7 +492,10 @@ impl Viewer {
             );
         let name = self.capture.as_ref().zip(self.selected).map_or_else(
             || "module".to_owned(),
-            |(capture, index)| sanitize(capture.parts()[index].label()),
+            |(capture, index)| {
+                let truncated: String = capture.parts()[index].label().chars().take(64).collect();
+                sanitize(&truncated)
+            },
         );
         format!("{stem}__{name}.txt")
     }
@@ -445,26 +550,69 @@ impl Viewer {
                 .collect::<Vec<_>>()
         });
         if let Some(path) = dropped.into_iter().next() {
+            if let Err(error) = validate_input_path(&path) {
+                self.stage = Stage::Home;
+                self.fade_at = Some(self.last_time);
+                let message = self.open_error(&path, &error);
+                self.home_error = Some(message);
+                return;
+            }
             self.start_scan(path);
         }
     }
 
+    /// Request keyboard focus for the module filter field.
+    fn focus_filter(&mut self, ui: &mut egui::Ui) {
+        if self.stage != Stage::Workspace || self.find_state.is_open() || !self.rail_open {
+            return;
+        }
+        if ui.memory(|memory| memory.focused().is_some()) {
+            return;
+        }
+        ui.memory_mut(|memory| {
+            memory.request_focus(egui::Id::new("module-filter"));
+        });
+    }
+
+    /// Step the in-module match cursor, mirroring the find-bar navigation.
+    fn step_match(&mut self, step: i32) {
+        if self.stage != Stage::Workspace || self.matches.is_empty() {
+            return;
+        }
+        let total = self.matches.len();
+        self.match_cursor = match step.cmp(&0) {
+            std::cmp::Ordering::Greater => (self.match_cursor + 1) % total,
+            std::cmp::Ordering::Less => self.match_cursor.checked_sub(1).unwrap_or(total - 1),
+            std::cmp::Ordering::Equal => self.match_cursor.min(total - 1),
+        };
+        self.scroll_to_line = self.matches.get(self.match_cursor).copied();
+    }
+
     fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
-        let (open_requested, save_requested, find_requested, settings_requested, escape) = ui
-            .input(|input| {
-                let command = input.modifiers.command;
-                (
-                    command && input.key_pressed(egui::Key::O),
-                    command && input.key_pressed(egui::Key::S),
-                    command && input.key_pressed(egui::Key::F),
-                    command && input.key_pressed(egui::Key::Comma),
-                    input.key_pressed(egui::Key::Escape),
-                )
-            });
+        let (
+            open_requested,
+            save_requested,
+            find_requested,
+            settings_requested,
+            escape,
+            slash,
+            next_requested,
+        ) = ui.input(|input| {
+            let command = input.modifiers.command;
+            (
+                command && input.key_pressed(egui::Key::O),
+                command && input.key_pressed(egui::Key::S),
+                command && input.key_pressed(egui::Key::F),
+                command && input.key_pressed(egui::Key::Comma),
+                input.key_pressed(egui::Key::Escape),
+                input.key_pressed(egui::Key::Slash) && !command,
+                input.key_pressed(egui::Key::F3) || (command && input.key_pressed(egui::Key::G)),
+            )
+        });
         if settings_requested {
             self.settings = Some(SettingsTab::General);
         }
-        if open_requested && self.stage != Stage::Welcome {
+        if open_requested {
             self.open_dialog();
         }
         if save_requested && self.body.is_some() {
@@ -473,8 +621,14 @@ impl Viewer {
         if find_requested && self.stage == Stage::Workspace && self.selected.is_some() {
             self.find_state = FindState::Focus;
         }
-        if escape {
+        if escape && self.find_state.is_open() {
             self.find_state = FindState::Closed;
+        }
+        if slash {
+            self.focus_filter(ui);
+        }
+        if next_requested && self.find_state.is_open() {
+            self.step_match(1);
         }
     }
 
@@ -547,7 +701,22 @@ impl Viewer {
             ),
         );
     }
+}
 
+/// Frame for the splash stages (welcome/home/scanning), which paint a
+/// full-bleed vertical gradient.
+///
+/// `Frame::central_panel` defaults to an 8 px inner margin filled with
+/// `panel_fill` (pure white in light mode), so painting only
+/// `available_rect_before_wrap()` left a visible ring ("banda") around the
+/// bluish gradient. Zero margin + matching fill removes it.
+fn splash_frame(style: &egui::Style, palette: &Palette) -> egui::Frame {
+    egui::Frame::central_panel(style)
+        .inner_margin(egui::Margin::ZERO)
+        .fill(palette.bg_bottom)
+}
+
+impl Viewer {
     /// Settings entry, settings modal, stage fade and panic dialog, in order.
     fn overlays(&mut self, ctx: &egui::Context, palette: &Palette) {
         // The workspace header draws its own settings entry point; on the other
@@ -559,6 +728,69 @@ impl Viewer {
         self.settings_modal(ctx);
         self.draw_fade(ctx, palette);
         self.panic_dialog(ctx);
+    }
+
+    /// Render the current stage: splash screens or the module workspace.
+    fn show_stage(&mut self, ui: &mut egui::Ui, palette: &Palette, file_hovered: bool) {
+        let splash = splash_frame(ui.style(), palette);
+        match self.stage {
+            Stage::Welcome => {
+                let mut started = false;
+                egui::CentralPanel::default().frame(splash).show(ui, |ui| {
+                    theme::paint_background(ui.painter(), ui.available_rect_before_wrap(), palette);
+                    started = splash::welcome(ui, &self.i18n, palette);
+                });
+                if started {
+                    self.stage = Stage::Home;
+                    self.fade_at = Some(self.last_time);
+                }
+            }
+            Stage::Home => {
+                let error = self.home_error.clone();
+                let mut chosen = false;
+                egui::CentralPanel::default().frame(splash).show(ui, |ui| {
+                    theme::paint_background(ui.painter(), ui.available_rect_before_wrap(), palette);
+                    chosen = splash::home(ui, &self.i18n, palette, file_hovered);
+                    if let Some(message) = &error {
+                        ui.add_space(10.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new(message).size(13.0).color(palette.danger));
+                        });
+                    }
+                });
+                if chosen {
+                    self.open_dialog();
+                }
+            }
+            Stage::Scanning => {
+                let (phase, detail, progress) = self.scan_labels();
+                egui::CentralPanel::default().frame(splash).show(ui, |ui| {
+                    theme::paint_background(ui.painter(), ui.available_rect_before_wrap(), palette);
+                    let view = ScanView {
+                        elapsed: (self.last_time - self.scan_started) as f32,
+                        progress,
+                        phase: &phase,
+                        detail: &detail,
+                    };
+                    splash::scanning(ui, &view, palette);
+                });
+            }
+            Stage::Workspace => {
+                egui::Panel::top("header").show(ui, |ui| self.header(ui));
+                if self.rail_open {
+                    egui::Panel::left("module_rail")
+                        .resizable(true)
+                        .default_size(280.0)
+                        .size_range(220.0..=620.0)
+                        .show(ui, |ui| self.module_rail(ui));
+                }
+                let content_frame = egui::Frame::central_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(14, 6));
+                egui::CentralPanel::default()
+                    .frame(content_frame)
+                    .show(ui, |ui| self.reading_surface(ui));
+            }
+        }
     }
 }
 
@@ -604,76 +836,7 @@ impl eframe::App for Viewer {
             .frame(footer_frame)
             .show(ui, |ui| self.footer_bar(ui));
 
-        match self.stage {
-            Stage::Welcome => {
-                let mut started = false;
-                egui::CentralPanel::default().show(ui, |ui| {
-                    theme::paint_background(
-                        ui.painter(),
-                        ui.available_rect_before_wrap(),
-                        &palette,
-                    );
-                    started = splash::welcome(ui, &self.i18n, &palette);
-                });
-                if started {
-                    self.stage = Stage::Home;
-                    self.fade_at = Some(self.last_time);
-                }
-            }
-            Stage::Home => {
-                let error = self.home_error.clone();
-                let mut chosen = false;
-                egui::CentralPanel::default().show(ui, |ui| {
-                    theme::paint_background(
-                        ui.painter(),
-                        ui.available_rect_before_wrap(),
-                        &palette,
-                    );
-                    chosen = splash::home(ui, &self.i18n, &palette, file_hovered);
-                    if let Some(message) = &error {
-                        ui.add_space(10.0);
-                        ui.vertical_centered(|ui| {
-                            ui.label(RichText::new(message).size(13.0).color(palette.danger));
-                        });
-                    }
-                });
-                if chosen {
-                    self.open_dialog();
-                }
-            }
-            Stage::Scanning => {
-                let (phase, detail, progress) = self.scan_labels();
-                egui::CentralPanel::default().show(ui, |ui| {
-                    theme::paint_background(
-                        ui.painter(),
-                        ui.available_rect_before_wrap(),
-                        &palette,
-                    );
-                    let view = ScanView {
-                        elapsed: (self.last_time - self.scan_started) as f32,
-                        progress,
-                        phase: &phase,
-                        detail: &detail,
-                    };
-                    splash::scanning(ui, &view, &palette);
-                });
-            }
-            Stage::Workspace => {
-                egui::Panel::top("header").show(ui, |ui| self.header(ui));
-                if self.rail_open {
-                    egui::Panel::left("module_rail")
-                        .resizable(true)
-                        .default_size(340.0)
-                        .size_range(220.0..=620.0)
-                        .show(ui, |ui| self.module_rail(ui));
-                }
-                let content_frame = egui::Frame::central_panel(ui.style())
-                    .inner_margin(egui::Margin::symmetric(14, 6));
-                egui::CentralPanel::default()
-                    .frame(content_frame)
-                    .show(ui, |ui| self.reading_surface(ui));
-            }
-        }
+        self.show_stage(ui, &palette, file_hovered);
 
         self.overlays(ui.ctx(), &palette);
         if self.busy.is_some()
@@ -729,5 +892,83 @@ impl Viewer {
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(tag: &str) -> PathBuf {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "mikrotik-rif-app-test-{}-{seq}-{tag}.rif",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn valid_file_passes_validation() {
+        let path = temp_path("ok");
+        std::fs::write(&path, b"data").unwrap();
+        assert!(validate_input_path(&path).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn missing_file_is_rejected() {
+        let path = std::env::temp_dir().join(format!(
+            "mikrotik-rif-app-test-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(validate_input_path(&path).is_err());
+    }
+
+    #[test]
+    fn directory_is_rejected() {
+        let dir = std::env::temp_dir();
+        assert!(validate_input_path(&dir).is_err());
+    }
+
+    #[test]
+    fn non_rif_extension_is_still_allowed() {
+        let mut path = temp_path("txt");
+        path.set_extension("txt");
+        std::fs::write(&path, b"data").unwrap();
+        assert!(validate_input_path(&path).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oversized_file_is_rejected_with_the_worker_reason() {
+        let path = temp_path("big");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_CAPTURE_BYTES + 1).unwrap();
+        drop(file);
+        assert_eq!(validate_input_path(&path), Err(InputError::TooLarge));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn etag_allows_printable_ascii_up_to_the_cap() {
+        assert_eq!(
+            sanitize_etag_value("\"abc123\""),
+            Some("\"abc123\"".to_owned())
+        );
+        assert_eq!(
+            sanitize_etag_value("W/\"xyz\""),
+            Some("W/\"xyz\"".to_owned())
+        );
+    }
+
+    #[test]
+    fn etag_rejects_empty_oversized_and_non_ascii() {
+        assert_eq!(sanitize_etag_value(""), None);
+        assert_eq!(sanitize_etag_value(&"a".repeat(2049)), None);
+        assert_eq!(sanitize_etag_value("etag\r\ninjected"), None);
+        assert_eq!(sanitize_etag_value("café"), None);
+        assert_eq!(sanitize_etag_value("with space\x7F"), None);
     }
 }

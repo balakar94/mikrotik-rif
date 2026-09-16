@@ -33,7 +33,7 @@ pub(crate) enum FindState {
 
 impl FindState {
     /// Whether the search bar should be drawn.
-    const fn is_open(self) -> bool {
+    pub(crate) const fn is_open(self) -> bool {
         !matches!(self, Self::Closed)
     }
 }
@@ -64,14 +64,15 @@ impl Viewer {
         let mut open_settings = false;
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            toggle_rail = icons::icon_button(
-                ui,
-                &palette,
-                icons::Glyph::PanelLeft,
-                self.rail_open,
-                true,
-                &toggle_hint,
-            );
+            // Chevron points where the rail will go: `<` to collapse it,
+            // `>` to bring it back.
+            let rail_glyph = if self.rail_open {
+                icons::Glyph::ChevronLeft
+            } else {
+                icons::Glyph::ChevronRight
+            };
+            toggle_rail =
+                icons::icon_button(ui, &palette, rail_glyph, self.rail_open, true, &toggle_hint);
             ui.add_space(4.0);
             if let Some(path) = &source {
                 let name = path.file_name().map_or_else(
@@ -112,7 +113,10 @@ impl Viewer {
         let filter_hint = self.i18n.text("hint-filter");
         let clear_hint = self.i18n.text("button-clear");
         let no_matches = self.i18n.text("empty-filter");
+        let clear_label = self.i18n.text("button-clear");
         let total = self.capture.as_ref().map_or(0, |capture| capture.len());
+        // Translator note: `{ $position }` is the filtered count,
+        // `{ $total }` is the total module count.
         let counter = self
             .i18n
             .progress("label-counter", units(self.visible.len()), units(total));
@@ -133,9 +137,18 @@ impl Viewer {
 
         if self.visible.is_empty() && !self.filter.trim().is_empty() {
             ui.add_space(12.0);
+            let mut clear_filter = false;
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new(no_matches).size(12.5).color(palette.muted));
+                ui.add_space(8.0);
+                if ui.button(clear_label).clicked() {
+                    clear_filter = true;
+                }
             });
+            if clear_filter {
+                self.filter.clear();
+                self.refresh_visible();
+            }
             return;
         }
 
@@ -176,15 +189,11 @@ impl Viewer {
     }
 
     pub(crate) fn reading_surface(&mut self, ui: &mut egui::Ui) {
-        let palette = theme::current(ui.ctx());
-        let empty_selection = self.i18n.text("empty-selection");
-        let Some(index) = self.selected else {
-            ui.centered_and_justified(|ui| {
-                ui.label(RichText::new(empty_selection).color(palette.muted));
-            });
+        if self.selected.is_none() {
+            self.show_no_selection(ui);
             return;
-        };
-
+        }
+        let index = self.selected.unwrap_or(0);
         let (label, compressed, readable, fault) = {
             let Some(capture) = &self.capture else {
                 return;
@@ -201,29 +210,132 @@ impl Viewer {
         let mut size_args = FluentArgs::new();
         size_args.set("size", human_size(compressed));
         let compressed_label = self.i18n.render("label-compressed", &size_args);
+        let decoding = self.i18n.text("status-decoding-inline");
+
+        self.reading_header(ui, &label, &compressed_label, readable);
+        ui.add_space(2.0);
+
+        if !readable {
+            self.show_unreadable(ui, fault.as_deref());
+            return;
+        }
+
+        if self.find_state.is_open() {
+            self.find_bar(ui);
+        }
+
+        if self.body.is_none() {
+            let palette = theme::current(ui.ctx());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(decoding).color(palette.muted));
+            });
+            return;
+        }
+
+        self.text_view(ui);
+    }
+
+    /// Placeholder when no module is selected: the usual hint, or a call to
+    /// open another file when the capture holds nothing readable.
+    fn show_no_selection(&mut self, ui: &mut egui::Ui) {
+        let palette = theme::current(ui.ctx());
+        let no_readable = self.capture.as_ref().is_some_and(|capture| {
+            !capture.parts().is_empty() && capture.parts().iter().all(|part| !part.is_readable())
+        });
+        if !no_readable {
+            let empty_selection = self.i18n.text("empty-selection");
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new(empty_selection).color(palette.muted));
+            });
+            return;
+        }
+        let message = self.i18n.text("empty-no-readable");
+        let open_label = self.i18n.text("button-open");
+        let mut open = false;
+        ui.centered_and_justified(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(message).color(palette.muted));
+                ui.add_space(8.0);
+                if ui.button(open_label).clicked() {
+                    open = true;
+                }
+            });
+        });
+        if open {
+            self.open_dialog();
+        }
+    }
+
+    /// Title row: truncated module name with full tooltip, compressed size and
+    /// the copy/save/gutter/find controls on the right.
+    fn reading_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        compressed_label: &str,
+        readable: bool,
+    ) {
+        let palette = theme::current(ui.ctx());
         let save_as = self.i18n.text("button-save-as");
         let copy_label = self.i18n.text("button-copy");
         let line_numbers = self.i18n.text("label-line-numbers");
         let find_hint = self.i18n.text("button-find");
-        let unreadable = self.i18n.text("module-unreadable");
-        let decoding = self.i18n.text("status-decoding-inline");
 
         ui.add_space(4.0);
+        let short_title = ellipsize_title(label);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&label).size(16.0).strong());
+            ui.label(RichText::new(&short_title).size(16.0).strong())
+                .on_hover_text(label);
             ui.label(
                 RichText::new(compressed_label)
                     .size(12.0)
                     .color(palette.muted),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button(save_as).clicked() {
+                if ui
+                    .add_enabled(readable, egui::Button::new(save_as))
+                    .clicked()
+                {
                     self.save_body();
                 }
-                if ui.button(copy_label).clicked() {
+                if ui
+                    .add_enabled(readable, egui::Button::new(copy_label))
+                    .clicked()
+                {
                     self.copy_body(ui.ctx());
                 }
-                ui.toggle_value(&mut self.gutter, line_numbers.as_str());
+                // Gutter toggle: icon-only is hover-only (`on_hover_text` in
+                // icons.rs reports no button role/name to assistive tech), so
+                // show the localized "Line numbers" text as a real toggle
+                // button when there is room, falling back to the icon in the
+                // same spot on narrow widths. `Button::selectable` exposes
+                // toggle semantics and the visible name to AT/keyboard focus.
+                let gutter_clicked = if ui.available_width() > 360.0 {
+                    ui.add(egui::Button::selectable(self.gutter, &line_numbers).small())
+                        .on_hover_text(&line_numbers)
+                        .clicked()
+                } else if icons::icon_button(
+                    ui,
+                    &palette,
+                    icons::Glyph::PanelLeft,
+                    self.gutter,
+                    true,
+                    &line_numbers,
+                ) {
+                    true
+                } else {
+                    // Keep the accessible name perceivable even in icon mode:
+                    // a focused screen-reader user still gets the tooltip text
+                    // via the icon's hover text, while sighted keyboard users
+                    // see the focus ring. The wide layout above is the fully
+                    // perceivable variant.
+                    false
+                };
+                if gutter_clicked {
+                    self.gutter = !self.gutter;
+                }
                 if icons::icon_button(
                     ui,
                     &palette,
@@ -240,28 +352,16 @@ impl Viewer {
                 }
             });
         });
-        ui.add_space(2.0);
+    }
 
-        if !readable {
-            let message = fault.as_deref().unwrap_or(unreadable.as_str());
-            ui.label(RichText::new(message).color(palette.danger));
-            return;
+    /// Danger banner naming the unreadable module plus a muted fault line.
+    fn show_unreadable(&mut self, ui: &mut egui::Ui, fault: Option<&str>) {
+        let palette = theme::current(ui.ctx());
+        let unreadable = self.i18n.text("module-unreadable");
+        ui.label(RichText::new(unreadable).color(palette.danger));
+        if let Some(reason) = fault {
+            ui.label(RichText::new(reason).size(12.0).color(palette.muted));
         }
-
-        if self.find_state.is_open() {
-            self.find_bar(ui);
-        }
-
-        if self.body.is_none() {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new(decoding).color(palette.muted));
-            });
-            return;
-        }
-
-        self.text_view(ui);
     }
 
     /// In-module search: one rounded card holding the magnifier, an inline
@@ -272,9 +372,12 @@ impl Viewer {
         let previous_hint = self.i18n.text("button-previous");
         let next_hint = self.i18n.text("button-next");
         let clear_hint = self.i18n.text("button-clear");
+        let keys_hint = self.i18n.text("hint-find-keys");
 
         let total = self.matches.len();
         let position = if total == 0 { 0 } else { self.match_cursor + 1 };
+        // Translator note: `{ $position }` is the current match,
+        // `{ $total }` is the total match count.
         let counter = self
             .i18n
             .progress("label-find-counter", units(position), units(total));
@@ -366,6 +469,7 @@ impl Viewer {
         if close {
             self.find_state = FindState::Closed;
         }
+        ui.label(RichText::new(keys_hint).size(11.0).color(palette.muted));
         ui.add_space(8.0);
     }
 
@@ -374,9 +478,13 @@ impl Viewer {
         let gutter = self.gutter;
         let query = self.find.trim().to_owned();
         let font = TextStyle::Monospace.resolve(ui.style());
+        let palette = theme::current(ui.ctx());
         let text_color = ui.visuals().text_color();
         let gutter_color = ui.visuals().weak_text_color();
         let highlight = ui.visuals().selection.bg_fill;
+        let accent_fill = palette.accent;
+        let accent_ink = palette.on_accent;
+        let current_row = self.matches.get(self.match_cursor).copied();
         let spacing = ui.spacing().item_spacing.y;
         // Height without spacing: `show_rows` adds the spacing itself.
         let row_height = ui.text_style_height(&TextStyle::Monospace);
@@ -413,7 +521,19 @@ impl Viewer {
                         egui::TextFormat::simple(font.clone(), gutter_color),
                     );
                 }
-                append_highlighted(&mut job, line, &query, &font, text_color, highlight);
+                if Some(row) == current_row && !query.is_empty() {
+                    append_highlighted_with(
+                        &mut job,
+                        line,
+                        &query,
+                        &font,
+                        text_color,
+                        accent_ink,
+                        accent_fill,
+                    );
+                } else {
+                    append_highlighted(&mut job, line, &query, &font, text_color, highlight);
+                }
                 // `Ui::label` overrides `job.wrap` with the Ui's own wrap mode, so
                 // the row must be told to extend: otherwise a long line wraps,
                 // grows past `row_height` and breaks the virtualised scroll.
@@ -426,17 +546,17 @@ impl Viewer {
     pub(crate) fn recompute_matches(&mut self) {
         let needle = self.find.trim().to_owned();
         let mut found = Vec::new();
-        if !needle.is_empty() {
-            if let Some(body) = &self.body {
-                for (row, &start) in self.line_starts.iter().enumerate() {
-                    let end = self
-                        .line_starts
-                        .get(row + 1)
-                        .copied()
-                        .unwrap_or(body.text.len());
-                    if find_case_insensitive(&body.text[start..end], &needle, 0).is_some() {
-                        found.push(row);
-                    }
+        if !needle.is_empty()
+            && let Some(body) = &self.body
+        {
+            for (row, &start) in self.line_starts.iter().enumerate() {
+                let end = self
+                    .line_starts
+                    .get(row + 1)
+                    .copied()
+                    .unwrap_or(body.text.len());
+                if find_case_insensitive(&body.text[start..end], &needle, 0).is_some() {
+                    found.push(row);
                 }
             }
         }
@@ -562,6 +682,7 @@ fn search_field(
             let width = (ui.available_width() - reserve).max(80.0);
             let response = ui.add(
                 TextEdit::singleline(text)
+                    .id(egui::Id::new("module-filter"))
                     .frame(egui::Frame::NONE)
                     .hint_text(hint.to_owned())
                     .desired_width(width)
@@ -632,6 +753,22 @@ fn append_highlighted(
     color: Color32,
     highlight: Color32,
 ) {
+    append_highlighted_with(job, line, query, font, color, color, highlight);
+}
+
+/// Append one line, marking matches with an explicit foreground/background.
+///
+/// The current match uses the accent background with on-accent text; the rest
+/// use the selection background so the two states never rely on hue alone.
+fn append_highlighted_with(
+    job: &mut egui::text::LayoutJob,
+    line: &str,
+    query: &str,
+    font: &FontId,
+    color: Color32,
+    match_color: Color32,
+    match_bg: Color32,
+) {
     let base = egui::TextFormat::simple(font.clone(), color);
     if query.is_empty() {
         job.append(line, 0.0, base);
@@ -639,8 +776,8 @@ fn append_highlighted(
     }
     let marked = egui::TextFormat {
         font_id: font.clone(),
-        color,
-        background: highlight,
+        color: match_color,
+        background: match_bg,
         ..Default::default()
     };
 
@@ -658,22 +795,52 @@ fn append_highlighted(
     }
 }
 
+/// Truncate a module title to roughly 48 characters with an ellipsis.
+///
+/// The full title stays available as a tooltip, so nothing is lost.
+fn ellipsize_title(title: &str) -> String {
+    const LIMIT: usize = 48;
+    if title.chars().count() > LIMIT {
+        let mut short: String = title.chars().take(LIMIT).collect();
+        short.push('…');
+        short
+    } else {
+        title.to_owned()
+    }
+}
+
+/// Whether a file-name stem is reserved on Windows (`CON`, `PRN`, …).
+fn is_windows_reserved(stem: &str) -> bool {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    RESERVED.contains(&stem.to_ascii_uppercase().as_str())
+}
+
 /// Turn a module label into a safe file name fragment.
 pub(crate) fn sanitize(label: &str) -> String {
     let cleaned: String = label
         .chars()
+        .filter(|character| !character.is_control())
         .map(|character| match character {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             other => other,
         })
         .collect();
-    let trimmed =
-        cleaned.trim_matches(|character: char| character == '_' || character.is_whitespace());
+    let capped: String = cleaned.chars().take(64).collect();
+    let trimmed = capped
+        .trim()
+        .trim_end_matches(['.', ' '])
+        .trim_matches(|character: char| character == '_' || character.is_whitespace());
     if trimmed.is_empty() {
-        "module".to_owned()
-    } else {
-        trimmed.to_owned()
+        return "module".to_owned();
     }
+    let stem = trimmed.split('.').next().unwrap_or(trimmed);
+    if is_windows_reserved(stem) {
+        return "module".to_owned();
+    }
+    trimmed.to_owned()
 }
 
 /// Convert a collection length into the unsigned type used by messages.
@@ -734,5 +901,34 @@ mod tests {
     fn sanitize_removes_path_separators() {
         assert_eq!(sanitize("/ip/firewall/filter"), "ip_firewall_filter");
         assert_eq!(sanitize("log"), "log");
+    }
+
+    #[test]
+    fn sanitize_strips_controls_caps_and_trailing_dots() {
+        assert_eq!(sanitize("a\x00b\x1Fc"), "abc");
+        assert_eq!(sanitize("name...   "), "name");
+        assert_eq!(sanitize("  ___  "), "module");
+        let long = "x".repeat(100);
+        assert_eq!(sanitize(&long).chars().count(), 64);
+    }
+
+    #[test]
+    fn sanitize_blocks_windows_reserved_names() {
+        for reserved in [
+            "CON", "con", "PRN", "AUX", "NUL", "COM1", "com9", "LPT1", "lpt9",
+        ] {
+            assert_eq!(sanitize(reserved), "module", "{reserved}");
+        }
+        assert_eq!(sanitize("CON.txt"), "module");
+        assert_ne!(sanitize("console"), "module");
+    }
+
+    #[test]
+    fn title_ellipsis_keeps_short_names_and_truncates_long_ones() {
+        assert_eq!(ellipsize_title("short"), "short");
+        let long = "a".repeat(60);
+        let short = ellipsize_title(&long);
+        assert!(short.ends_with('…'));
+        assert_eq!(short.chars().count(), 49);
     }
 }

@@ -12,8 +12,8 @@
 )]
 
 use eframe::egui::{
-    self, Align2, Button, Color32, FontId, Painter, Pos2, Rect, RichText, Sense, Shape, Stroke,
-    Vec2, pos2, vec2,
+    self, Button, Color32, FontId, Painter, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, pos2,
+    vec2,
 };
 
 use crate::i18n::I18n;
@@ -38,37 +38,132 @@ pub struct ScanView<'a> {
 /// The block is measured before it is drawn so it ends up on the true vertical
 /// centre of the panel instead of being placed by a rough estimate.
 pub fn welcome(ui: &mut egui::Ui, i18n: &I18n, palette: &Palette) -> bool {
-    const GAP_AFTER_TITLE: f32 = 26.0;
-    const GAP_AFTER_ART: f32 = 24.0;
-    const GAP_BEFORE_BUTTON: f32 = 30.0;
-    const BUTTON_HEIGHT: f32 = 46.0;
-    const ART_HEIGHT: f32 = 104.0;
+    // (title_size, body_size, art_height, gap_after_title, gap_after_art,
+    // gap_before_button, button_height), from comfortable to ultra-compact.
+    // The first tier whose measured block fits the window wins, so short
+    // windows shrink artwork, type and gaps instead of scrolling.
+    const TIERS: [(f32, f32, f32, f32, f32, f32, f32); 3] = [
+        (40.0, 14.5, 104.0, 26.0, 24.0, 30.0, 46.0),
+        (36.0, 14.0, 72.0, 13.0, 12.0, 15.0, 44.0),
+        (30.0, 13.0, 48.0, 8.0, 8.0, 10.0, 40.0),
+    ];
 
-    let art = Vec2::new(ui.available_width().min(430.0), ART_HEIGHT);
-    let title_font = FontId::proportional(40.0);
-    let body_font = FontId::proportional(14.5);
+    let available_height = ui.available_height();
+    let art_width = ui.available_width().min(430.0);
     let body_width = ui.available_width().min(470.0);
 
     let title = i18n.text("app-title");
     let blurb = i18n.text("welcome-blurb");
 
-    let title_height = ui.ctx().fonts_mut(|fonts| fonts.row_height(&title_font));
-    let blurb_height = ui.ctx().fonts_mut(|fonts| {
-        fonts
-            .layout(blurb.clone(), body_font.clone(), palette.muted, body_width)
-            .size()
-            .y
-    });
-
+    let mut title_height = 0.0;
+    let mut blurb_height = 0.0;
+    let mut tier_index = TIERS.len() - 1;
+    for (index, tier) in TIERS.iter().enumerate() {
+        let candidate_title = FontId::proportional(tier.0);
+        let candidate_body = FontId::proportional(tier.1);
+        let measured_title = ui
+            .ctx()
+            .fonts_mut(|fonts| fonts.row_height(&candidate_title));
+        let measured_blurb = ui.ctx().fonts_mut(|fonts| {
+            fonts
+                .layout(
+                    blurb.clone(),
+                    candidate_body.clone(),
+                    palette.muted,
+                    body_width,
+                )
+                .size()
+                .y
+        });
+        let block = measured_title + tier.3 + tier.2 + tier.4 + measured_blurb + tier.5 + tier.6;
+        if block <= available_height {
+            title_height = measured_title;
+            blurb_height = measured_blurb;
+            tier_index = index;
+            break;
+        }
+        if index == TIERS.len() - 1 {
+            title_height = measured_title;
+            blurb_height = measured_blurb;
+        }
+    }
+    let tier = TIERS[tier_index];
+    let title_font = FontId::proportional(tier.0);
+    let body_font = FontId::proportional(tier.1);
+    let (art_height, gap_after_title, gap_after_art, gap_before_button, button_height) =
+        (tier.2, tier.3, tier.4, tier.5, tier.6);
+    let art = Vec2::new(art_width, art_height);
     let block = title_height
-        + GAP_AFTER_TITLE
-        + ART_HEIGHT
-        + GAP_AFTER_ART
+        + gap_after_title
+        + art_height
+        + gap_after_art
         + blurb_height
-        + GAP_BEFORE_BUTTON
-        + BUTTON_HEIGHT;
-    ui.add_space(((ui.available_height() - block) * 0.5).max(16.0));
+        + gap_before_button
+        + button_height;
 
+    if block > available_height {
+        // Even the ultra-compact tier does not fit: top-align inside a scroll
+        // area instead of centring and clipping the top.
+        ui.add_space(8.0);
+        let mut started = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            started = welcome_content(
+                ui,
+                i18n,
+                palette,
+                art,
+                &title,
+                &blurb,
+                title_font.clone(),
+                body_font.clone(),
+                body_width,
+                blurb_height,
+                gap_after_title,
+                gap_after_art,
+                gap_before_button,
+                button_height,
+            );
+        });
+        started
+    } else {
+        ui.add_space(((available_height - block) * 0.5).max(16.0));
+        welcome_content(
+            ui,
+            i18n,
+            palette,
+            art,
+            &title,
+            &blurb,
+            title_font,
+            body_font,
+            body_width,
+            blurb_height,
+            gap_after_title,
+            gap_after_art,
+            gap_before_button,
+            button_height,
+        )
+    }
+}
+
+/// Centred welcome block shared by the full and compact/scrolled layouts.
+#[allow(clippy::too_many_arguments)]
+fn welcome_content(
+    ui: &mut egui::Ui,
+    i18n: &I18n,
+    palette: &Palette,
+    art: Vec2,
+    title: &str,
+    blurb: &str,
+    title_font: FontId,
+    body_font: FontId,
+    body_width: f32,
+    blurb_height: f32,
+    gap_after_title: f32,
+    gap_after_art: f32,
+    gap_before_button: f32,
+    button_height: f32,
+) -> bool {
     let mut started = false;
     ui.vertical_centered(|ui| {
         ui.label(
@@ -77,11 +172,11 @@ pub fn welcome(ui: &mut egui::Ui, i18n: &I18n, palette: &Palette) -> bool {
                 .strong()
                 .color(palette.text),
         );
-        ui.add_space(GAP_AFTER_TITLE);
+        ui.add_space(gap_after_title);
 
         let (rect, _) = ui.allocate_exact_size(art, Sense::hover());
         draw_flow(ui.painter(), rect, palette);
-        ui.add_space(GAP_AFTER_ART);
+        ui.add_space(gap_after_art);
 
         ui.add_sized(
             [body_width, blurb_height],
@@ -89,7 +184,7 @@ pub fn welcome(ui: &mut egui::Ui, i18n: &I18n, palette: &Palette) -> bool {
                 .wrap()
                 .halign(egui::Align::Center),
         );
-        ui.add_space(GAP_BEFORE_BUTTON);
+        ui.add_space(gap_before_button);
 
         let start = ui.add(
             Button::new(
@@ -100,7 +195,7 @@ pub fn welcome(ui: &mut egui::Ui, i18n: &I18n, palette: &Palette) -> bool {
             )
             .fill(palette.accent)
             .corner_radius(12.0)
-            .min_size(Vec2::new(190.0, BUTTON_HEIGHT)),
+            .min_size(Vec2::new(190.0, button_height)),
         );
         if start.clicked() {
             started = true;
@@ -259,27 +354,90 @@ fn draw_usb(painter: &Painter, center: Pos2, palette: &Palette) {
 
 /// Draw the home screen. Returns `true` when the user asked to choose a file.
 pub fn home(ui: &mut egui::Ui, i18n: &I18n, palette: &Palette, file_hovered: bool) -> bool {
-    let zone = Vec2::new(560.0, 240.0);
-    ui.add_space(((ui.available_height() - zone.y) * 0.5).max(16.0));
+    // (zone_height, title_size, hint_size), from comfortable to ultra-compact.
+    // The first tier that fits the window wins, so short windows shrink the
+    // drop zone and type instead of scrolling.
+    const TIERS: [(f32, f32, f32); 3] = [
+        (240.0, 19.0, 13.0),
+        (200.0, 18.0, 13.0),
+        (170.0, 17.0, 12.5),
+    ];
 
-    let mut chosen = false;
-    ui.vertical_centered(|ui| {
-        let (rect, response) = ui.allocate_exact_size(zone, Sense::click());
-        let hovered = response.hovered() || file_hovered;
-        draw_drop_zone(ui, rect, hovered, palette, i18n);
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    let available_height = ui.available_height();
+    let zone_width = ui.available_width().min(560.0);
+    let mut tier_index = TIERS.len() - 1;
+    for (index, tier) in TIERS.iter().enumerate() {
+        if tier.0 + 32.0 <= available_height {
+            tier_index = index;
+            break;
         }
-        if response.clicked() {
-            chosen = true;
-        }
+    }
+    let tier = TIERS[tier_index];
+    let zone = Vec2::new(zone_width, tier.0);
+
+    if tier.0 + 32.0 > available_height {
+        // Even the smallest zone does not fit: top-align inside a scroll
+        // area instead of centring and clipping the top.
+        ui.add_space(8.0);
+        let mut chosen = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                chosen = home_content(ui, i18n, palette, file_hovered, zone, tier.1, tier.2);
+            });
+        });
+        chosen
+    } else {
+        ui.add_space(((available_height - zone.y) * 0.5).max(16.0));
+        let mut chosen = false;
+        ui.vertical_centered(|ui| {
+            chosen = home_content(ui, i18n, palette, file_hovered, zone, tier.1, tier.2);
+        });
+        chosen
+    }
+}
+
+/// Single drop-zone allocation shared by the centred and scrolled layouts.
+fn home_content(
+    ui: &mut egui::Ui,
+    i18n: &I18n,
+    palette: &Palette,
+    file_hovered: bool,
+    zone: Vec2,
+    title_size: f32,
+    hint_size: f32,
+) -> bool {
+    let drop_title = i18n.text("drop-title");
+    let (rect, response) = ui.allocate_exact_size(zone, Sense::click());
+    let hovered = response.hovered() || file_hovered;
+    draw_drop_zone(ui, rect, hovered, palette, i18n, title_size, hint_size);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    // Expose the custom-painted zone to assistive tech with a button role
+    // and the same visible title as its accessible name.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, drop_title.clone())
     });
-
-    chosen
+    let drop_clicked = response.clicked();
+    // Keyboard-accessible equivalent: a real button invoking the same file
+    // picker. The painted zone stays untouched for pointer and drag-drop.
+    ui.add_space(12.0);
+    let open = ui
+        .add(Button::new(i18n.text("button-open")).min_size(Vec2::new(190.0, 36.0)))
+        .clicked();
+    drop_clicked || open
 }
 
 /// Draw the drop target: dashed outline, folder glyph and instructions.
-fn draw_drop_zone(ui: &mut egui::Ui, rect: Rect, hovered: bool, palette: &Palette, i18n: &I18n) {
+fn draw_drop_zone(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    hovered: bool,
+    palette: &Palette,
+    i18n: &I18n,
+    title_size: f32,
+    hint_size: f32,
+) {
     let painter = ui.painter();
     let fill = if hovered {
         palette.card_hover
@@ -302,26 +460,51 @@ fn draw_drop_zone(ui: &mut egui::Ui, rect: Rect, hovered: bool, palette: &Palett
     ];
     painter.extend(Shape::dashed_line(&path, Stroke::new(2.0, edge), 10.0, 8.0));
 
-    draw_folder(painter, rect.center() - vec2(0.0, 40.0), hovered, palette);
+    // Positions scale with the zone height so the compact tiers keep the
+    // same proportions as the comfortable one (fractions of 240 px).
+    let height = rect.height();
+    draw_folder(
+        painter,
+        rect.center() - vec2(0.0, height * 0.167),
+        hovered,
+        palette,
+    );
 
     let title_id = if hovered {
         "drop-title-hover"
     } else {
         "drop-title"
     };
-    ui.painter().text(
-        rect.center() + vec2(0.0, 40.0),
-        Align2::CENTER_CENTER,
-        i18n.text(title_id),
-        FontId::proportional(19.0),
-        palette.text,
+    // Wrapped centred labels inside the zone so long locales (de/fr/ru)
+    // wrap instead of overflowing the painted rect. `put` positions each
+    // label at an absolute rect without disturbing the outer layout.
+    let title_rect = Rect::from_min_max(
+        pos2(rect.left() + 16.0, rect.center().y + height * 0.075),
+        pos2(rect.right() - 16.0, rect.center().y + height * 0.258),
     );
-    ui.painter().text(
-        rect.center() + vec2(0.0, 70.0),
-        Align2::CENTER_CENTER,
-        i18n.text("drop-hint"),
-        FontId::proportional(13.0),
-        palette.muted,
+    ui.put(
+        title_rect,
+        egui::Label::new(
+            RichText::new(i18n.text(title_id))
+                .font(FontId::proportional(title_size))
+                .color(palette.text),
+        )
+        .wrap()
+        .halign(egui::Align::Center),
+    );
+    let hint_rect = Rect::from_min_max(
+        pos2(rect.left() + 16.0, rect.center().y + height * 0.258),
+        pos2(rect.right() - 16.0, rect.bottom() - 10.0),
+    );
+    ui.put(
+        hint_rect,
+        egui::Label::new(
+            RichText::new(i18n.text("drop-hint"))
+                .font(FontId::proportional(hint_size))
+                .color(palette.muted),
+        )
+        .wrap()
+        .halign(egui::Align::Center),
     );
 }
 
@@ -357,25 +540,96 @@ fn draw_folder(painter: &Painter, center: Pos2, hovered: bool, palette: &Palette
 /// Draw the "reading the capture" animation, centred in the window.
 pub fn scanning(ui: &mut egui::Ui, view: &ScanView<'_>, palette: &Palette) {
     const BLOCK_HEIGHT: f32 = 400.0;
-    let top_gap = ((ui.available_height() - BLOCK_HEIGHT) * 0.5).max(16.0);
-    ui.add_space(top_gap);
 
+    // (art_height, gap_mid, gap_small, gap_before_bar, phase_size, detail_size)
+    // from comfortable to ultra-compact. The first tier whose measured block
+    // fits the window wins, so short windows shrink the artwork, type and
+    // gaps instead of scrolling. Phase titles stay well under the 32px cap.
+    const TIERS: [(f32, f32, f32, f32, f32, f32); 3] = [
+        (290.0, 18.0, 4.0, 18.0, 19.0, 13.0),
+        (200.0, 9.0, 2.0, 9.0, 17.0, 13.0),
+        (150.0, 4.0, 1.0, 6.0, 16.0, 12.0),
+    ];
+
+    let available_height = ui.available_height();
+    let available_width = ui.available_width();
+
+    let mut tier_index = TIERS.len() - 1;
+    let mut block = 0.0;
+    for (index, tier) in TIERS.iter().enumerate() {
+        let phase_height = ui
+            .ctx()
+            .fonts_mut(|fonts| fonts.row_height(&FontId::proportional(tier.4)));
+        let detail_height = ui
+            .ctx()
+            .fonts_mut(|fonts| fonts.row_height(&FontId::proportional(tier.5)));
+        let measured = tier.0 + tier.1 + phase_height + tier.2 + detail_height + tier.3 + 6.0;
+        if measured + 32.0 <= available_height {
+            tier_index = index;
+            block = measured;
+            break;
+        }
+        if index == TIERS.len() - 1 {
+            block = measured;
+        }
+    }
+    let tier = TIERS[tier_index];
+    let mut art = Vec2::new(460.0, tier.0);
+    art.x = art.x.min(available_width);
+    let bar_width = 420.0_f32.min(available_width);
+
+    if block + 32.0 > available_height {
+        // Even the ultra-compact tier does not fit: top-align inside a scroll
+        // area instead of centring and clipping the top.
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            scanning_content(
+                ui, view, palette, art, bar_width, tier.1, tier.2, tier.3, tier.4, tier.5,
+            );
+        });
+    } else {
+        let top_gap = ((available_height - BLOCK_HEIGHT.min(block)) * 0.5).max(16.0);
+        ui.add_space(top_gap);
+        scanning_content(
+            ui, view, palette, art, bar_width, tier.1, tier.2, tier.3, tier.4, tier.5,
+        );
+    }
+}
+
+/// Centred scanning block shared by the full and compact/scrolled layouts.
+#[allow(clippy::too_many_arguments)]
+fn scanning_content(
+    ui: &mut egui::Ui,
+    view: &ScanView<'_>,
+    palette: &Palette,
+    art: Vec2,
+    bar_width: f32,
+    gap_mid: f32,
+    gap_small: f32,
+    gap_before_bar: f32,
+    phase_size: f32,
+    detail_size: f32,
+) {
     ui.vertical_centered(|ui| {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(460.0, 290.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(art, Sense::hover());
         draw_scanner(ui.painter(), rect, view.elapsed, palette);
 
-        ui.add_space(18.0);
+        ui.add_space(gap_mid);
         ui.label(
             RichText::new(view.phase)
-                .size(19.0)
+                .size(phase_size)
                 .strong()
                 .color(palette.text),
         );
-        ui.add_space(4.0);
-        ui.label(RichText::new(view.detail).size(13.0).color(palette.muted));
-        ui.add_space(18.0);
+        ui.add_space(gap_small);
+        ui.label(
+            RichText::new(view.detail)
+                .size(detail_size)
+                .color(palette.muted),
+        );
+        ui.add_space(gap_before_bar);
 
-        let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(420.0, 6.0), Sense::hover());
+        let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(bar_width, 6.0), Sense::hover());
         draw_progress(ui.painter(), bar_rect, view.progress, view.elapsed, palette);
     });
 }

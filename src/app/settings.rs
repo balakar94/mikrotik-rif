@@ -165,13 +165,8 @@ impl Viewer {
 
         let mut close = false;
         let response = egui::Modal::new(egui::Id::new("settings-modal"))
-            .backdrop_color(Color32::from_black_alpha(
-                if ctx.theme() == egui::Theme::Dark {
-                    150
-                } else {
-                    60
-                },
-            ))
+            // Same black 45% scrim in both themes.
+            .backdrop_color(Color32::from_black_alpha(115))
             .frame(frame)
             .show(ctx, |ui| {
                 ui.set_width(width);
@@ -269,9 +264,46 @@ impl Viewer {
             i18n::endonym(&self.language)
         };
         let mut selected = self.language.clone();
+        // Minimum 220px but auto-grows with the longest language endonym so
+        // long locales are not clipped by a fixed width.
+        let button_font = ui
+            .style()
+            .text_styles
+            .get(&egui::TextStyle::Button)
+            .cloned()
+            .unwrap_or(egui::FontId::proportional(14.0));
+        let combo_width = ui.ctx().fonts_mut(|fonts| {
+            let mut widest = fonts
+                .layout(
+                    system_language.clone(),
+                    button_font.clone(),
+                    palette.text,
+                    f32::INFINITY,
+                )
+                .size()
+                .x;
+            for tag in i18n::shipped_languages() {
+                let width = fonts
+                    .layout(
+                        i18n::endonym(tag),
+                        button_font.clone(),
+                        palette.text,
+                        f32::INFINITY,
+                    )
+                    .size()
+                    .x;
+                widest = widest.max(width);
+            }
+            (widest
+                + ui.spacing().icon_width
+                + ui.spacing().icon_spacing
+                + ui.spacing().button_padding.x * 2.0
+                + 16.0)
+                .max(220.0)
+        });
         egui::ComboBox::from_id_salt("settings-language")
             .selected_text(current)
-            .width(220.0)
+            .width(combo_width)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut selected, String::new(), system_language.as_str());
                 for tag in i18n::shipped_languages() {
