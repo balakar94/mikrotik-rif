@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-16
+
+### Fixed
+
+- Release plumbing only, no product changes: the SBOM step invoked
+  cargo-cyclonedx 0.5.5 with a nonexistent `--output` flag, which failed the
+  v0.4.0 publish job after all installers had built. The step now uses
+  `--override-filename` plus a move into `dist/`. Per the immutable-tag
+  policy, v0.4.0 (no published release) is superseded by this patch.
+
 ## [0.4.0] - 2026-09-16
 
 ### Added

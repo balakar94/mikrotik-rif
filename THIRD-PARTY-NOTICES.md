@@ -7524,7 +7524,7 @@ Used by:
 - `synstructure 0.13.2` — https://github.com/mystor/synstructure
 - `wayland-protocols 0.32.12` — https://github.com/smithay/wayland-rs
 - `fax 0.2.7` — https://github.com/pdf-rs/fax
-- `mikrotik-rif 0.4.0` — https://github.com/balakar94/mikrotik-rif
+- `mikrotik-rif 0.4.1` — https://github.com/balakar94/mikrotik-rif
 - `tiff 0.10.3` — https://github.com/image-rs/image-tiff
 - `rfd 0.17.2` — https://github.com/PolyMeilex/rfd
 - `cfg_aliases 0.2.2` — https://github.com/katharostech/cfg_aliases
@@ -7535,7 +7535,7 @@ Used by:
 - `libredox 0.1.24` — https://gitlab.redox-os.org/redox-os/libredox.git
 - `is-docker 0.2.0` — https://github.com/TheLarkInn/is-docker
 - `is-wsl 0.4.0` — https://github.com/TheLarkInn/is-wsl
-- `mikrotik-rif 0.4.0` — https://github.com/balakar94/mikrotik-rif
+- `mikrotik-rif 0.4.1` — https://github.com/balakar94/mikrotik-rif
 - `block2 0.5.1` — https://github.com/madsmtm/objc2
 - `block2 0.6.2` — https://github.com/madsmtm/objc2
 - `dispatch 0.2.0` — http://github.com/SSheldon/rust-dispatch
