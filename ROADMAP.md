@@ -50,7 +50,15 @@ words are honest about this repository's current state:
 
 - **Native review of the six non-English translations** (de, es, fr, lv, ru, zh)
   — *pending.* A test guarantees every locale defines every identifier; wording
-  quality has not had a native-speaker pass.
+  quality has not had a native-speaker pass. (0.4.0 added the missing
+  `error-open-*`, `empty-no-readable` and `hint-find-keys` identifiers with
+  best-effort translations.)
+
+- **Workflow audit gate** (zizmor, high severity, annotations) and **secret
+  scan** (gitleaks) — *done since 0.4.0.* Lower severities are surfaced as
+  annotations for triage but do not block CI; the tree carries known pedantic
+  hygiene findings (matrix expansions in build scripts, artifact credential
+  persistence, dependabot cooldown).
 
 - **Updater UI state-machine tests** — *candidate.* The network and verification
   logic is covered through a fake transport (`src/update/tests.rs`), but the
@@ -63,4 +71,5 @@ words are honest about this repository's current state:
 
 - **Third-party notices** — *done.* `THIRD-PARTY-NOTICES.md` is generated with
   `cargo-about`, shipped inside every package, and checked in CI against
-  `Cargo.lock`.
+  `Cargo.lock`. The file embeds the crate version, so it must be regenerated
+  in the same commit as every version bump.

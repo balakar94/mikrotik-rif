@@ -416,7 +416,15 @@ the official CLI directly.
 ## Cutting a release
 
 1. Ensure `main` is green in CI.
-2. Update the version in `Cargo.toml` (owned by the maintainer) and merge.
+2. Bump the version in `Cargo.toml`, regenerate the notices (they embed the
+   crate version, so the deny job's drift check fails otherwise), update
+   `CHANGELOG.md`, and commit `Cargo.toml`, `Cargo.lock` and
+   `THIRD-PARTY-NOTICES.md` together:
+   ```bash
+   cargo check # refreshes Cargo.lock
+   cargo fetch --locked
+   cargo about generate about.hbs --output-file THIRD-PARTY-NOTICES.md --fail --frozen
+   ```
 3. Create and push an annotated tag:
    ```bash
    git tag -a v0.3.0 -m "v0.3.0"
