@@ -960,3 +960,258 @@ y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+b
         Err(UpdateError::Response(_))
     ));
 }
+
+// ── Wave2B hardening ────────────────────────────────────────────────────
+
+#[test]
+fn etag_sanitization_rejects_unsafe_values() {
+    // Valid weak and strong validators survive, trimmed.
+    assert_eq!(
+        sanitize_etag("W/\"abc123\"").as_deref(),
+        Some("W/\"abc123\"")
+    );
+    assert_eq!(sanitize_etag("\"abc\"").as_deref(), Some("\"abc\""));
+    assert_eq!(
+        sanitize_etag("  \"abc\"  ").as_deref(),
+        Some("\"abc\""),
+        "surrounding spaces are trimmed"
+    );
+    // CRLF injection is refused.
+    assert!(sanitize_etag("evil\r\nInjected: 1").is_none());
+    assert!(sanitize_etag("a\nb").is_none());
+    assert!(sanitize_etag("a\rb").is_none());
+    // Other controls, DEL and non-ASCII are refused.
+    assert!(sanitize_etag("a\x00b").is_none(), "NUL refused");
+    assert!(sanitize_etag("a\tb").is_none(), "TAB refused");
+    assert!(sanitize_etag("a\x1fb").is_none(), "control refused");
+    assert!(sanitize_etag("a\x7fb").is_none(), "DEL refused");
+    assert!(sanitize_etag("é").is_none(), "non-ASCII refused");
+    assert!(
+        sanitize_etag("\"aé\"").is_none(),
+        "non-ASCII inside refused"
+    );
+    // Length cap: 2048 passes, 2049 does not.
+    assert!(sanitize_etag(&"a".repeat(2048)).is_some(), "boundary kept");
+    assert!(
+        sanitize_etag(&"a".repeat(2049)).is_none(),
+        "oversized refused"
+    );
+}
+
+#[test]
+fn fetch_sanitizes_network_and_storage_etags() {
+    // A corrupt network ETag never reaches storage: it becomes `None`.
+    let body = br#"{"tag_name":"v9.9.9","html_url":"https://github.com/balakar94/mikrotik-rif/releases/tag/v9.9.9","assets":[]}"#;
+    let transport = FakeTransport::new(vec![FakeResponse {
+        status: 200,
+        location: None,
+        content_length: None,
+        etag: Some("bad\r\nInjected: 1"),
+        body: body.to_vec(),
+    }]);
+    match fetch_latest_with(&transport, None).expect("parses") {
+        FetchOutcome::Modified { etag, .. } => {
+            assert!(etag.is_none(), "CRLF ETag must be dropped, got {etag:?}");
+        }
+        FetchOutcome::NotModified => panic!("expected a release body"),
+    }
+    // An oversized network ETag is dropped the same way.
+    let oversized: &'static str = Box::leak("a".repeat(2049).into_boxed_str());
+    let transport = FakeTransport::new(vec![FakeResponse {
+        status: 200,
+        location: None,
+        content_length: None,
+        etag: Some(oversized),
+        body: body.to_vec(),
+    }]);
+    match fetch_latest_with(&transport, None).expect("parses") {
+        FetchOutcome::Modified { etag, .. } => {
+            assert!(etag.is_none(), "oversized ETag must be dropped");
+        }
+        FetchOutcome::NotModified => panic!("expected a release body"),
+    }
+    // A corrupt stored ETag is never echoed as `If-None-Match`.
+    let transport = FakeTransport::new(vec![FakeResponse {
+        status: 304,
+        location: None,
+        content_length: None,
+        etag: None,
+        body: Vec::new(),
+    }]);
+    assert!(matches!(
+        fetch_latest_with(&transport, Some("bad\r\nx")).expect("304 is not an error"),
+        FetchOutcome::NotModified
+    ));
+    assert_eq!(
+        transport.etags()[0],
+        None,
+        "corrupt conditional must not be sent"
+    );
+}
+
+#[test]
+fn tampered_sums_are_refused_before_checksum_lookup() {
+    // Fixed valid vector (`minisign-verify` suite): `b"test"` under this key.
+    let public_key = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    let signature = "untrusted comment: signature from minisign secret key\n\
+RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
+trusted comment: timestamp:1556193335\tfile:test\n\
+y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
+    let payload = b"installer-bytes";
+    let asset = github_asset("mikrotik-rif_0.3.0_amd64.deb");
+
+    // Untouched sums pass the signature layer (then fail on the missing
+    // checksum entry, proving verification succeeded).
+    let transport = FakeTransport::new(vec![
+        FakeResponse::ok(payload),
+        FakeResponse::ok(b"test"),
+        FakeResponse::ok(signature.as_bytes()),
+    ]);
+    let dest = scratch_path();
+    match download_verified_with(
+        &transport,
+        &asset,
+        "https://github.com/sums",
+        Some("https://github.com/sums.minisig"),
+        public_key,
+        &dest,
+        &|_, _| {},
+    ) {
+        DownloadOutcome::Failed(reason) => {
+            assert!(
+                reason.contains("no checksum entry"),
+                "valid signature must reach checksum lookup, got {reason}"
+            );
+        }
+        other => panic!("expected MissingChecksum, got {other:?}"),
+    }
+    assert!(!dest.exists(), "unverifiable download is deleted");
+
+    // The same signature over tampered sums is refused at the signature
+    // layer and the installer is deleted without execution.
+    let transport = FakeTransport::new(vec![
+        FakeResponse::ok(payload),
+        FakeResponse::ok(b"tampered"),
+        FakeResponse::ok(signature.as_bytes()),
+    ]);
+    let dest = scratch_path();
+    match download_verified_with(
+        &transport,
+        &asset,
+        "https://github.com/sums",
+        Some("https://github.com/sums.minisig"),
+        public_key,
+        &dest,
+        &|_, _| {},
+    ) {
+        DownloadOutcome::Failed(reason) => {
+            assert!(
+                reason.contains("signature check failed"),
+                "tampered sums must fail verification, got {reason}"
+            );
+        }
+        other => panic!("expected signature refusal, got {other:?}"),
+    }
+    assert!(!dest.exists(), "tampered download is deleted");
+}
+
+#[test]
+fn download_to_a_directory_fails_cleanly() {
+    // A pre-existing directory at `dest` must become a clean `Io` error, not
+    // a truncation or a panic; the directory itself survives.
+    let dir = std::env::temp_dir().join(format!(
+        "mikrotik-rif-update-test-dir-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let transport = FakeTransport::new(vec![FakeResponse::ok(b"installer-bytes")]);
+    let asset = github_asset("mikrotik-rif_0.3.0_amd64.deb");
+    match download_verified_with(
+        &transport,
+        &asset,
+        "https://github.com/sums",
+        None,
+        "",
+        &dir,
+        &|_, _| {},
+    ) {
+        DownloadOutcome::Failed(reason) => {
+            assert!(
+                reason.starts_with("update failed:"),
+                "directory dest must be an Io error, got {reason}"
+            );
+        }
+        other => panic!("expected Io refusal, got {other:?}"),
+    }
+    assert!(dir.is_dir(), "the directory is left untouched");
+    let _ = std::fs::remove_dir(&dir);
+}
+
+/// Endless zero stream without allocating the bytes up front.
+struct LongReader {
+    remaining: u64,
+}
+
+impl std::io::Read for LongReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        let remaining = usize::try_from(self.remaining).unwrap_or(usize::MAX);
+        let take = buf.len().min(remaining);
+        buf[..take].fill(0);
+        self.remaining = self
+            .remaining
+            .saturating_sub(u64::try_from(take).unwrap_or(u64::MAX));
+        Ok(take)
+    }
+}
+
+/// Transport that lies about `Content-Length` (small) while streaming a body
+/// larger than [`MAX_INSTALLER_BYTES`].
+struct LyingTransport;
+
+impl HttpGet for LyingTransport {
+    fn get(&self, request: &HttpRequest<'_>) -> Result<HttpResponse, UpdateError> {
+        check_url(request.url)?;
+        Ok(HttpResponse::new(
+            200,
+            None,
+            Some(4),
+            None,
+            Box::new(LongReader {
+                remaining: MAX_INSTALLER_BYTES + 1,
+            }),
+        ))
+    }
+}
+
+#[test]
+fn lying_content_length_is_cut_mid_stream_and_cleaned_up() {
+    let asset = github_asset("mikrotik-rif_0.3.0_amd64.deb");
+    let dest = scratch_path();
+    match download_verified_with(
+        &LyingTransport,
+        &asset,
+        "https://github.com/sums",
+        None,
+        "",
+        &dest,
+        &|_, _| {},
+    ) {
+        DownloadOutcome::Failed(reason) => {
+            assert!(
+                reason.contains("larger than"),
+                "oversized stream must be refused, got {reason}"
+            );
+        }
+        other => panic!("expected size refusal, got {other:?}"),
+    }
+    assert!(
+        !dest.exists(),
+        "the partial file is removed, never left as valid"
+    );
+}

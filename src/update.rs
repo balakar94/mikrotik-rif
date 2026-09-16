@@ -122,7 +122,7 @@ const ASSET_PREFIX: &str = "mikrotik-rif_";
 /// Network timeout for the small release-metadata request.
 const METADATA_TIMEOUT: Duration = Duration::from_secs(25);
 /// Network timeout for installer downloads (large files on slow links).
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 /// Streaming buffer used while writing a download to disk.
 const CHUNK_LEN: usize = 64 * 1024;
 /// Hosts allowed for update traffic. Every URL (initial and per redirect hop)
@@ -155,6 +155,8 @@ const MAX_FIELD_BYTES: usize = 8 * 1024;
 /// Maximum length accepted for the release-notes body (only 280 characters are
 /// ever displayed, but the JSON is parsed whole).
 const MAX_NOTES_BYTES: usize = 256 * 1024;
+/// Longest `ETag` value kept from a response or from storage (2 KiB).
+const MAX_ETAG_BYTES: usize = 2048;
 
 /// What went wrong while checking, downloading, or handing off an update.
 #[derive(Debug, thiserror::Error)]
@@ -347,6 +349,41 @@ pub fn check_url(url: &str) -> Result<(), UpdateError> {
     }
 }
 
+/// Keep only a safe `ETag` value from an untrusted source.
+///
+/// The value travels in an HTTP header (`ETag` out, `If-None-Match` back) and
+/// is also persisted through eframe storage, so it crosses two trust
+/// boundaries: network input and stored input that a local process or a
+/// corrupted profile could have altered. Anything longer than
+/// [`MAX_ETAG_BYTES`] or containing bytes outside printable ASCII
+/// (`0x20..=0x7E`, which already excludes `\r`, `\n` and every other control
+/// or non-ASCII byte) is refused with `None`; otherwise the trimmed value is
+/// returned.
+///
+/// Handoff note: the storage read itself lives outside this module
+/// (`restore_update_prefs` in `src/app/update_ui.rs` loads `update.etag`, and
+/// `App::save` in `src/app.rs` writes it back), which this task must not
+/// touch. The boundary is therefore enforced where the stored value re-enters
+/// this module — [`net::spawn_check`] and `fetch_latest_with` sanitize the
+/// incoming conditional with this function — and where a network value leaves
+/// it for storage (`fetch_latest_with` sanitizes the response `ETag` before
+/// it is returned in `CheckOutcome`). Callers must never persist or echo an
+/// unsanitized `ETag`.
+#[must_use]
+pub(crate) fn sanitize_etag(raw: &str) -> Option<String> {
+    if raw.len() > MAX_ETAG_BYTES {
+        return None;
+    }
+    if !raw.bytes().all(|byte| (0x20..=0x7E).contains(&byte)) {
+        return None;
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
 /// Reject a release whose JSON payload is implausibly large.
 ///
 /// The endpoint is GitHub over TLS, but an oversized body (many assets or very
@@ -488,12 +525,12 @@ pub fn select_asset<'a>(assets: &'a [AssetInfo], os: &str, arch: &str) -> Option
 pub fn select_asset_for_current(assets: &[AssetInfo]) -> Option<&AssetInfo> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    if os == "linux" && running_appimage().is_some() {
-        if let Some(token) = asset_arch(arch) {
-            if let Some(image) = find_appimage(assets, &format!("_{token}")) {
-                return Some(image);
-            }
-        }
+    if os == "linux"
+        && running_appimage().is_some()
+        && let Some(token) = asset_arch(arch)
+        && let Some(image) = find_appimage(assets, &format!("_{token}"))
+    {
+        return Some(image);
     }
     select_asset(assets, os, arch)
 }

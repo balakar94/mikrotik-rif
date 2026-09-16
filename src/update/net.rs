@@ -136,7 +136,11 @@ impl HttpGet for UreqTransport {
                 .map(ToOwned::to_owned)
         };
         let location = header("location");
-        let etag = header("etag");
+        // The `ETag` is remote input: sanitize at the transport boundary so a
+        // corrupt or malicious header never reaches storage or the next
+        // conditional request. A second sanitization in `fetch_latest_with`
+        // covers test doubles and any future transport.
+        let etag = header("etag").and_then(|value| sanitize_etag(&value));
         let content_length = header("content-length").and_then(|value| value.parse::<u64>().ok());
         let body: Box<dyn Read> = Box::new(response.into_body().into_reader());
         Ok(HttpResponse::new(
@@ -166,11 +170,25 @@ pub enum FetchOutcome {
 /// carrying the conditional request in and the new ETag out.
 ///
 /// Blocking; [`spawn_check`] runs it off the UI thread.
+///
+/// The incoming `etag` is the value persisted from a previous response
+/// (storage lives in `src/app/update_ui.rs`, out of scope for this module, so
+/// it is treated as untrusted here and sanitized before it is echoed as
+/// `If-None-Match`). The outgoing `etag` is the sanitized response header, or
+/// `None` when the server sent none, an empty value, or an unsafe one.
 pub(super) fn fetch_latest_with(
     transport: &dyn HttpGet,
     etag: Option<&str>,
 ) -> Result<FetchOutcome, UpdateError> {
-    let response = get_following_redirects(transport, &latest_release_url(), ACCEPT_JSON, etag)?;
+    let conditional = etag
+        .and_then(sanitize_etag)
+        .filter(|value| !value.is_empty());
+    let response = get_following_redirects(
+        transport,
+        &latest_release_url(),
+        ACCEPT_JSON,
+        conditional.as_deref(),
+    )?;
     if response.status() == 304 {
         return Ok(FetchOutcome::NotModified);
     }
@@ -180,7 +198,12 @@ pub(super) fn fetch_latest_with(
             response.status()
         )));
     }
-    let etag = response.etag().map(ToOwned::to_owned);
+    // `UreqTransport` already sanitized, but test doubles bypass it, so
+    // sanitize again at the point the value leaves the network layer.
+    let etag = response
+        .etag()
+        .and_then(sanitize_etag)
+        .filter(|value| !value.is_empty());
     let body = read_limited(response.into_body(), MAX_METADATA_BYTES)?;
     let release: ReleaseInfo =
         serde_json::from_slice(&body).map_err(|error| UpdateError::Response(error.to_string()))?;
@@ -218,7 +241,11 @@ pub(super) fn get_following_redirects(
     if_none_match: Option<&str>,
 ) -> Result<HttpResponse, UpdateError> {
     let mut url = start_url.to_owned();
-    let mut conditional = if_none_match.map(ToOwned::to_owned);
+    // The conditional comes from storage via `fetch_latest_with`; sanitize
+    // before echoing it so a corrupted profile cannot inject header bytes.
+    let mut conditional = if_none_match
+        .and_then(sanitize_etag)
+        .filter(|value| !value.is_empty());
     for _ in 0..=MAX_REDIRECTS {
         check_url(&url)?;
         let response = transport.get(&HttpRequest {
@@ -288,12 +315,20 @@ fn origin_of(url: &str) -> &str {
 
 /// Check for updates on a background thread; the single message arrives on
 /// the returned channel. Never blocks the caller.
+///
+/// `etag` is the persisted value from eframe storage (see the handoff note on
+/// [`sanitize_etag`]): it is sanitized here so a corrupt profile never
+/// reaches the wire as `If-None-Match`.
 #[must_use]
 pub fn spawn_check(current_version: String, etag: Option<String>) -> Receiver<CheckOutcome> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
+        let sanitized = etag
+            .as_deref()
+            .and_then(sanitize_etag)
+            .filter(|value| !value.is_empty());
         let transport = UreqTransport::new(METADATA_TIMEOUT);
-        let outcome = match fetch_latest_with(&transport, etag.as_deref()) {
+        let outcome = match fetch_latest_with(&transport, sanitized.as_deref()) {
             Ok(FetchOutcome::NotModified) => CheckOutcome::NotModified,
             Ok(FetchOutcome::Modified { release, etag }) => {
                 if is_update(&current_version, &release.tag) {
