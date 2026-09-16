@@ -86,12 +86,16 @@ jobs:
       # Provenance: CycloneDX SBOM of the release tree, attached alongside the
       # installers and covered by SHA256SUMS.txt (generated next) and by the
       # build-provenance attestation below. Pinned install for reproducibility.
+      # cargo-cyclonedx 0.5.5 has no --output flag: --override-filename takes
+      # a bare stem (it appends .json itself) and always writes to the
+      # working directory, hence the move into dist/ (verified locally).
       - name: Generate SBOM (CycloneDX)
         shell: bash
         run: |
           set -euo pipefail
           cargo install cargo-cyclonedx --locked --version 0.5.5
-          cargo cyclonedx --all --format json --output dist/sbom.cdx.json
+          cargo cyclonedx --all --format json --override-filename sbom.cdx
+          mv sbom.cdx.json dist/sbom.cdx.json
           ls -l dist/sbom.cdx.json
 
       - name: Generate SHA256SUMS.txt
