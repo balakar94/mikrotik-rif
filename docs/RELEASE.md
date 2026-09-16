@@ -127,14 +127,27 @@ default:
 
 Configure the variable and the secret **together**: a public key without a
 signing step makes every update fail closed, while a signing step without the
-public key is inert. The verification path is unit-tested against a minisign
-fixture; the CI signing branch has not been exercised on a real release.
+public key is inert. The `release.yml` post-sign gate (`Verify
+SHA256SUMS.txt signature`) enforces this by running `minisign -V` against the
+variable's public key before publishing and failing when they disagree. The
+verification path is unit-tested against a minisign fixture; the CI signing branch has not been exercised on a real release.
+
+`release.yml` pins `minisign=0.10.*` on every install. To exercise the
+plumbing without publishing, dispatch **Release** manually with `dry-run: true`:
+the `Minisign dry-run` step generates an ephemeral key pair confined to
+`RUNNER_TEMP`, signs `SHA256SUMS.txt`, verifies with `minisign -V`, then
+discards the keys and the throwaway signature (`dist/` is left untouched and
+the Publish/post-publish steps are skipped).
 
 ## Release integrity gates
 
-`release.yml` runs three checks around the publish job (`v*` tags only), so a
+`release.yml` runs checks around the publish job (`v*` tags only), so a
 release cannot publish assets that disagree with its tag or with its own
-checksums:
+checksums. The `release` job runs in the `release` GitHub environment with
+`timeout-minutes: 20` and minimal permissions
+(`contents: write, attestations: write, id-token: write`); publishing uses
+`fail_on_unmatched_files: true` and `make_latest: true`, so a missing `dist/*`
+file fails instead of silently publishing a partial release.
 
 - **Tag ↔ version**: `GITHUB_REF_NAME` must equal `v<version>` read from
   `Cargo.toml`, because cargo-packager bakes that version into every normalised
@@ -147,6 +160,24 @@ checksums:
 - **Manifest ↔ published assets (post-publish)**: `gh release view` re-reads the
   real asset names. This runs after the release exists, so a failure there means
   "fix the names", not "nothing was published".
+- **Signature ↔ public key (post-sign)**: when `SHA256SUMS.txt.minisig` exists,
+  `minisign -V` verifies it against `MIKROTIK_RIF_MINISIGN_PUBKEY` before
+  publishing.
+
+The release job also generates `dist/sbom.cdx.json` (CycloneDX, via pinned
+`cargo-cyclonedx 0.5.5`; covered by `SHA256SUMS.txt` because it is generated
+before the manifest) and attaches a build-provenance attestation
+(`actions/attest-build-provenance`, `subject-path: dist/*`).
+
+Reproducibility notes: `rust-toolchain.toml` pins Rust 1.95 (the crate
+`rust-version` / MSRV); `build.yml` passes `MIKROTIK_RIF_COMMIT: ${{
+github.sha }}` into `cargo build --release --locked` so the baked-in commit is
+exact even without `.git`; runner labels are pinned (`ubuntu-24.04`,
+`macos-15`, `windows-2025`, plus the native `ubuntu-24.04-arm` /
+`windows-11-arm` arm64 runners); `build`/`ci test`/`deny` carry
+`timeout-minutes: 60` and `release` carries `20`. Both `build.yml` and
+`release.yml` append `$GITHUB_STEP_SUMMARY` summaries (`rustc -Vv`,
+`git rev-parse HEAD`, `sha256sum dist/*`, `ls -lh`).
 
 The updater in `src/update.rs` accepts asset downloads only from `github.com`,
 `api.github.com` and GitHub's object-store hosts (`objects...` and the current
@@ -430,10 +461,13 @@ xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"
 
 On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
 
-## Rollback
+## Rollback (forward-fix only)
 
-- A bad release: delete the GitHub Release/tag, fix the issue, and push a new
-  tag. Tags are immutable references, so do not force-push an existing tag.
+- A bad release: **never delete the GitHub Release, never delete or re-push a
+  `v*` tag.** Tags are immutable once published (the updater, checksums,
+  attestations and any mirrors already reference them). Forward-fix instead:
+  fix on `main`, bump the patch version in `Cargo.toml`, and push a new tag
+  (e.g. a bad `v0.3.0` is followed by `v0.3.1`, never by a re-pushed `v0.3.0`).
 - A bad CI change: revert the commit under `.github/workflows/`; the workflows
   are the only CI state and contain no secrets. `build.yml` is the single
   packaging definition, so a packaging regression is fixed in one place.

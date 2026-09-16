@@ -22,23 +22,39 @@ cargo about generate about.hbs --output-file THIRD-PARTY-NOTICES.md --fail --fro
 - {{{name}}} — {{{count}}} crate(s)
 {{/each}}
 
-## Licence texts
+## Licence texts (deduplicated by SPDX identifier: one section per licence)
 
-{{#each licenses}}
-### {{{name}}}
+Deduplication is by SPDX identifier (`overview`), not by licence text. Several
+`licenses` entries can share the same SPDX `name` while carrying different
+copyright headers in `text`; they are merged here into a single section per
+SPDX identifier with one aggregated `used_by` list, and every distinct text
+found for that identifier is reproduced below.
+
+{{#each overview}}
+### {{{name}}} — {{{count}}} crate(s)
 
 Used by:
 
+{{#each ../licenses}}
+{{#if (eq name ../name)}}
 {{#each used_by}}
 - `{{{crate.name}}} {{{crate.version}}}`{{#if crate.repository}} — {{{crate.repository}}}{{/if}}
 {{/each}}
+{{/if}}
+{{/each}}
 
 <details>
-<summary>Full licence text</summary>
+<summary>Full licence text (SPDX: {{{name}}})</summary>
 
+{{#each ../licenses}}
+{{#if (eq name ../name)}}
 ````text
 {{{text}}}
 ````
+
+---
+{{/if}}
+{{/each}}
 
 </details>
 
