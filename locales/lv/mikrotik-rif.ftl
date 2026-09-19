@@ -134,3 +134,32 @@ about-repository = Pirmkods vietnē GitHub
 about-credits-heading = Pateicības
 about-credits-body = Veidots ar egui/eframe un citām atklātā pirmkoda Rust bibliotēkām. Iekļautie burtveidoli: Inter, JetBrains Mono un Noto Sans SC, katrs saskaņā ar SIL Open Font License 1.1; pilnie licences teksti un trešo pušu paziņojumi tiek instalēti kopā ar lietotni.
 about-trademark = MikroTik RIF Viewer ir neatkarīgs projekts, kas nav saistīts ar MikroTik, ko MikroTik neatbalsta un nereklamē. "MikroTik" un "RouterOS" ir to attiecīgo īpašnieku preču zīmes, kas izmantotas tikai savietojamības aprakstīšanai.
+
+## Strukturālas nepilnības
+notes-warning = { $count ->
+    [zero] atrastas { $count } strukturālas nepilnības
+    [one] atrasta { $count } strukturāla nepilnība
+   *[other] atrastas { $count } strukturālas nepilnības
+}
+notes-details-show = Rādīt detaļas
+notes-details-hide = Paslēpt detaļas
+notes-dismiss = Aizvērt šo brīdinājumu
+note-kind-nested-open = Sadaļa atvērta no jauna pirms aizvēršanas
+note-kind-stray-close = Aizverošs marķieris ārpus jebkura moduļa
+note-kind-trailing-text = Teksts pēc pēdējā moduļa
+notes-entry = { $kind } · nobīde { $offset }
+notes-more = … un vēl { $count }
+
+## Meklēšana visos moduļos
+button-search-all = Meklēt visos moduļos
+hint-search-all = Teksts visos moduļos
+button-search-all-run = Meklēt
+button-cancel = Atcelt
+search-all-progress = { $position } / { $total } pārbaudīti
+search-all-hits = { $count ->
+    [zero] atbilst { $count } moduļu
+    [one] atbilst { $count } modulis
+   *[other] atbilst { $count } moduļi
+}
+search-all-no-hits = Neviens modulis nesatur šo tekstu
+label-search-hit = atbilst

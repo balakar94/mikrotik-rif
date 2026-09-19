@@ -131,3 +131,30 @@ about-repository = Code source sur GitHub
 about-credits-heading = Crédits
 about-credits-body = Créé avec egui/eframe et d'autres crates Rust open source. Polices incluses : Inter, JetBrains Mono et Noto Sans SC, chacune sous la SIL Open Font License 1.1 ; les textes complets des licences et les mentions des tiers sont installés avec l'application.
 about-trademark = MikroTik RIF Viewer est un projet indépendant, sans lien d'affiliation, d'approbation ou de parrainage avec MikroTik. « MikroTik » et « RouterOS » sont des marques de leurs propriétaires respectifs, utilisées uniquement pour décrire l'interopérabilité.
+
+## Anomalies structurelles
+notes-warning = { $count ->
+    [one] { $count } anomalie structurelle détectée
+   *[other] { $count } anomalies structurelles détectées
+}
+notes-details-show = Afficher les détails
+notes-details-hide = Masquer les détails
+notes-dismiss = Ignorer cet avertissement
+note-kind-nested-open = Section réouverte avant sa fermeture
+note-kind-stray-close = Marqueur de fermeture hors de tout module
+note-kind-trailing-text = Texte après le dernier module
+notes-entry = { $kind } · décalage { $offset }
+notes-more = … et { $count } de plus
+
+## Recherche dans tous les modules
+button-search-all = Rechercher dans tous les modules
+hint-search-all = Texte dans tous les modules
+button-search-all-run = Rechercher
+button-cancel = Annuler
+search-all-progress = { $position } / { $total } analysés
+search-all-hits = { $count ->
+    [one] { $count } module correspond
+   *[other] { $count } modules correspondent
+}
+search-all-no-hits = Aucun module ne contient ce texte
+label-search-hit = correspondance

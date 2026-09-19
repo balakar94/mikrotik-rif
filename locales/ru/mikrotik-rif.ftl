@@ -134,3 +134,32 @@ about-repository = Исходный код на GitHub
 about-credits-heading = Благодарности
 about-credits-body = Создано с использованием egui/eframe и других открытых crate-ов Rust. Включённые шрифты: Inter, JetBrains Mono и Noto Sans SC, каждый под лицензией SIL Open Font License 1.1; полные тексты лицензий и уведомления третьих сторон устанавливаются вместе с приложением.
 about-trademark = MikroTik RIF Viewer — независимый проект, не связанный с MikroTik, не одобренный и не спонсируемый MikroTik. «MikroTik» и «RouterOS» — товарные знаки их соответствующих владельцев, используемые только для описания совместимости.
+
+## Структурные аномалии
+notes-warning = { $count ->
+    [one] найдена { $count } структурная аномалия
+    [few] найдено { $count } структурные аномалии
+   *[many] найдено { $count } структурных аномалий
+}
+notes-details-show = Показать детали
+notes-details-hide = Скрыть детали
+notes-dismiss = Закрыть это предупреждение
+note-kind-nested-open = Раздел открыт заново до закрытия
+note-kind-stray-close = Закрывающий маркер вне модуля
+note-kind-trailing-text = Текст после последнего модуля
+notes-entry = { $kind } · смещение { $offset }
+notes-more = … и ещё { $count }
+
+## Поиск по всем модулям
+button-search-all = Искать во всех модулях
+hint-search-all = Текст во всех модулях
+button-search-all-run = Искать
+button-cancel = Отмена
+search-all-progress = { $position } / { $total } проверено
+search-all-hits = { $count ->
+    [one] совпадает { $count } модуль
+    [few] совпадают { $count } модуля
+   *[many] совпадают { $count } модулей
+}
+search-all-no-hits = Ни один модуль не содержит этот текст
+label-search-hit = совпадение

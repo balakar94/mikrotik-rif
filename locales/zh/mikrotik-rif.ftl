@@ -122,3 +122,24 @@ about-repository = GitHub 上的源代码
 about-credits-heading = 致谢
 about-credits-body = 使用 egui/eframe 及其他开源 Rust crate 构建。内置字体：Inter、JetBrains Mono 和 Noto Sans SC，均依据 SIL Open Font License 1.1 授权；完整的许可证文本及第三方声明随应用一起安装。
 about-trademark = MikroTik RIF Viewer 是独立项目，与 MikroTik 无关联，也未获得其认可或赞助。"MikroTik" 和 "RouterOS" 是各自所有者的商标，仅用于描述互操作性。
+
+## 结构异常
+notes-warning = 发现 { $count } 处结构异常
+notes-details-show = 显示详情
+notes-details-hide = 隐藏详情
+notes-dismiss = 关闭此警告
+note-kind-nested-open = 分节在关闭前被重新打开
+note-kind-stray-close = 模块之外的结束标记
+note-kind-trailing-text = 最后一个模块之后的文本
+notes-entry = { $kind } · 偏移 { $offset }
+notes-more = …还有 { $count } 条
+
+## 跨模块搜索
+button-search-all = 在所有模块中搜索
+hint-search-all = 在所有模块中搜索文本
+button-search-all-run = 搜索
+button-cancel = 取消
+search-all-progress = 已检查 { $position } / { $total }
+search-all-hits = 有 { $count } 个模块匹配
+search-all-no-hits = 没有模块包含该文本
+label-search-hit = 匹配
