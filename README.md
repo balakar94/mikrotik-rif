@@ -30,15 +30,20 @@ traffic other than the opt-out update check described below.
 
 ## Highlights
 
-- **Indexes first, decodes on demand.** Opening a capture transcodes just enough
-  of each part to learn its label and keeps the payload compressed. A part is
+- **Indexes first, decodes on demand.** Opening a capture transcodes each part
+  body once into a single buffer and records where its compressed payload
+  starts, so there is no second copy of every payload to hold. A part is
   inflated only when you select it, so peak memory tracks the open module rather
   than the whole file.
 - **Responsive on huge captures.** Reading, indexing and decompression run on a
   background worker thread, and the module list and text view are virtualized,
   so a module with hundreds of thousands of lines still scrolls smoothly.
+  In-flight indexing and expansion can be cancelled cooperatively, so a new
+  choice does not wait for the old one to finish.
 - **Honest about damage.** A part that cannot be indexed is still listed and
-  marked, instead of being silently dropped.
+  marked, instead of being silently dropped. Structural problems in the
+  container itself are surfaced in a dismissible notes banner rather than
+  swallowed.
 - **Everything stays on the machine.** The parser is UI-agnostic and touches no
   files; the app writes nothing to disk unless you ask it to export a module.
 - **Follows your system, remembers your choice.** Light/dark theme and
@@ -113,10 +118,21 @@ In the workspace:
   text the full width.
 - Modules that share a label are disambiguated as `· copy 2`, `· copy 3`, and
   unreadable modules are listed in the alert colour.
+- **Structural notes.** When the scanner notices marker damage while indexing,
+  a dismissible banner appears above the text; it names how many oddities were
+  found and can list up to 50 of them, each as a kind and a byte offset. It
+  stays dismissed until another capture is opened.
+- **Global module search.** The magnifier in the rail header opens a search
+  across every readable module: the scan expands modules one at a time on the
+  worker, reports progress while it runs, marks the matching modules in the
+  list, and can be cancelled at any point.
+- Revisiting a module opened earlier in the session is instant: expanded text
+  and its line index are cached (bounded to 8 modules or 64 MiB) instead of
+  being inflated again.
 - **Line numbers** toggles the gutter.
-- The **magnifier** button opens in-module search; matches are highlighted and
-  counted, with previous/next navigation. Enter jumps to the next match,
-  Shift+Enter to the previous one, and Esc closes the bar.
+- The **magnifier** on the reading surface opens in-module search; matches are
+  highlighted and counted, with previous/next navigation. Enter jumps to the
+  next match, Shift+Enter to the previous one, and Esc closes the bar.
 - **Copy** puts the open module on the clipboard; **Save as…** writes it to a
   text file.
 
@@ -129,6 +145,28 @@ Keyboard shortcuts (Command on macOS, Control elsewhere):
 | `Cmd/Ctrl+F` | Search in the open module |
 | `Cmd/Ctrl+,` | Open Settings |
 | `Esc` | Close the search bar or Settings |
+
+## Headless CLI
+
+The same binary is also a headless reader for scripted use. A bare path or no
+arguments still starts the desktop viewer; a recognised command runs without
+opening a window.
+
+```sh
+mikrotik-rif --help                          # usage
+mikrotik-rif --list supout.rif               # ordinal, label, compressed bytes, status
+mikrotik-rif --extract supout.rif --module "ip/firewall" --stdout
+mikrotik-rif --extract supout.rif --all --out parts/
+```
+
+`--extract` selects either the first part whose label matches `--module` exactly
+or, with `--all`, every readable part. Output goes to `<dir>/<sanitised-label>.txt`
+with `--out`, to standard output with `--stdout`, or by default to a
+`<capture-stem>.parts/` directory beside the capture. `--all` disambiguates
+colliding labels with a numeric suffix instead of overwriting. A leading `--`
+treats the next argument as a path even if it starts with `-`. Exit codes are
+`0` for success, `1` for an operational failure (missing file, unreadable
+module) and `2` for a malformed command line.
 
 ## Settings
 
@@ -154,7 +192,7 @@ The gear in the top bar (and on the welcome and home screens), or
 
 ## Requirements
 
-- Rust 1.85 or newer (edition 2024) to build.
+- Rust 1.95 or newer (edition 2024) to build.
 - A Vulkan/Metal/DX12-capable GPU for the default eframe `wgpu` renderer.
 - No runtime dependencies beyond the bundled fonts. On Linux, a desktop with
   X11 or Wayland.
@@ -175,6 +213,20 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+Beyond the gates, the parser has a `cargo-fuzz` harness and a Criterion bench
+suite; both need no extra setup to read:
+
+```sh
+cargo bench --bench parser    # indexing, expansion and cache benchmarks
+cargo +nightly fuzz run parse_capture   # needs a nightly toolchain; see fuzz/README.md
+```
+
+The fuzz campaign is scheduled and non-blocking (findings are surfaced as a
+failed job plus an uploaded crash artifact, never as a gate on a pull request),
+and the committed harness is exercised only by seed replay on the normal test
+path. See [`fuzz/README.md`](fuzz/README.md) and
+[`benches/README.md`](benches/README.md) for the details.
+
 The icon assets can be regenerated with `python3 tools/make_icon.py` (needs
 Pillow; uses `iconutil` on macOS).
 
@@ -187,15 +239,17 @@ unusual packing: each group of four symbols is read as a little-endian base-64
 number and emitted least-significant byte first. The decoded bytes are a
 NUL-terminated part label followed by a zlib stream.
 
-The reader indexes labels only and inflates a single part on demand, under
-configurable budgets:
+The reader transcodes each part body once to recover its label and keeps the
+payload compressed, then inflates a single part on demand, under configurable
+budgets:
 
 | Limit | Default |
 | --- | --- |
 | Parts per capture | 100 000 |
 | Raw part body | 128 MiB |
 | Decompressed part | 256 MiB |
-| Container line length | 64 MiB |
+| Transcoded payloads (all parts) | 512 MiB |
+| Container line length | 128 MiB |
 
 No real capture is committed to this repository: captures can carry sensitive
 router configuration, so the tests build synthetic captures in memory.
@@ -223,13 +277,15 @@ LICENSE
 THIRD-PARTY-NOTICES.md  dependency licence texts, shipped inside every package
 about.toml           cargo-about policy for the third-party notices
 about.hbs            template used to render THIRD-PARTY-NOTICES.md
-.github/workflows/   CI, the tag-triggered release pipeline and a packaging smoke run
+.github/workflows/   CI, the release pipeline, packaging smoke and scheduled fuzz
 docs/RELEASE.md      release engineering and verified prerequisites
 src/
-  main.rs            entry point and module wiring
+  lib.rs             library root: exposes the parser, starts the app or dispatches the CLI
+  main.rs            thin binary wrapper around mikrotik_rif::run
+  cli.rs             headless --list / --extract reader
   build_info.rs      version, git commit and the short build hash
   app.rs             application shell, stages and orchestration
-  app/workspace.rs   module rail, text view and in-module search
+  app/workspace.rs   module rail, text view, in-module search and the notes banner
   app/update_ui.rs   updater state machines and hand-off
   app/settings.rs    settings modal: shell, theme and language
   app/settings/      updates.rs and about.rs tabs
@@ -242,8 +298,11 @@ src/
   update/net.rs      HTTP transport, release fetch and installer download
   update/handoff.rs  installer hand-off and AppImage self-replace
   update/tests.rs    updater tests (fake transport, no network)
-  worker.rs          background reading, indexing and decoding
+  worker.rs          background reading, indexing and decoding, with cancellation
   parser/            capture format reader (codec, scanner, deflate, capture, limits, error)
+tests/               parser integration, property and cancellation tests
+fuzz/                cargo-fuzz harness, seed corpus and generator (see fuzz/README.md)
+benches/             Criterion parser benchmarks (see benches/README.md)
 locales/<tag>/mikrotik-rif.ftl
 assets/fonts/        bundled Inter, JetBrains Mono and Noto Sans SC (OFL)
 assets/fonts/egui/   licence texts for egui's embedded default fonts

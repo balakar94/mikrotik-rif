@@ -6,8 +6,45 @@ words are honest about this repository's current state:
 - **done** — shipped and verified.
 - **implemented, off by default** — the code and tests exist, but the feature is
   inert until configured; the product does not use it yet.
+- **implemented, exercised only by seed replay** — the harness and tests exist
+  and run on the normal path, but the scheduled campaign is non-blocking and
+  only seed replay has actually executed.
 - **candidate** — worth considering, not scheduled.
 - **not planned for now** — deliberately out of scope.
+
+## Parser and tooling
+
+- **Cooperative cancellation of indexing and expansion** — *done.* `Cancel`
+  tokens are threaded through `from_bytes_cancellable`, `read_bytes` /
+  `read_cached`, `expand_cancellable` and `locate_parts_cancellable`, and a
+  raised token aborts with `RifError::Cancelled`. The worker trips the token of
+  the in-flight index or expansion preemptively and reports `ExpandCancelled`.
+
+- **Single-buffer indexing** — *done.* Each part body is transcoded once into
+  one buffer and the compressed payload is recorded as an offset into it, so
+  indexing no longer retains a second `to_vec` copy of every payload.
+
+- **Bounded expansion cache** — *done.* `PartCache` is a least-recently-used
+  cache bounded to 8 entries or 64 MiB of retained text by default, owned by the
+  worker thread so a re-selected module is served without a second inflation.
+
+- **Library surface, integration and property tests** — *done.* The parser is
+  exposed as a library (`src/lib.rs`), with `tests/parser_integration.rs`,
+  `tests/parser_properties.rs` and `tests/cancellation.rs`, plus an opt-in
+  real-corpus test gated on `MIKROTIK_RIF_CORPUS`.
+
+- **Fuzzing harness** — *implemented, exercised only by seed replay.* Four
+  `cargo-fuzz` targets live under `fuzz/` with a committed seed corpus and a
+  `verify_corpus` example; the scheduled workflow (`.github/workflows/fuzz.yml`)
+  is non-blocking and only seed replay has actually executed.
+
+- **Criterion benchmarks** — *done.* `benches/parser.rs` measures the scanner,
+  indexing, the codec, expansion and the cache, and is declared with
+  `harness = false` so the standard command measures for real.
+
+- **Headless CLI** — *done.* The same binary answers `--help`/`-h`, `--list`
+  and `--extract` (with `--module`/`--all` and `--out`/`--stdout`); a bare path
+  or no arguments still opens the desktop viewer.
 
 ## Release signing
 
