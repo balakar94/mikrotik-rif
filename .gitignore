@@ -45,6 +45,9 @@ Desktop.ini
 # Packaged installers (cargo-packager / cargo-generate-rpm output)
 # ─────────────────────────────────────────────────────────────────────────────
 /dist/
+# Nightly fuzz build artifacts; the harness sources under fuzz/ are committed.
+/fuzz/target/
+/fuzz/Cargo.lock
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Secrets and local environment
