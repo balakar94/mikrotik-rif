@@ -1,0 +1,138 @@
+name: Fuzz
+
+# Scheduled + manually dispatched fuzzing campaign.
+#
+# NON-BLOCKING by design: the campaign job is allowed to fail
+# (`continue-on-error: true`), so a parser finding is surfaced as a red job plus
+# an uploaded crash artifact without ever gating pull requests or the release
+# path. This matches the "surface findings without blocking PRs" philosophy in
+# fuzz/README.md ("CI intent (non-blocking)"): a nightly toolchain plus a
+# meaningful campaign is too slow/flaky for the PR path. For the same reason
+# this workflow deliberately does NOT run on `pull_request`.
+on:
+  # Weekly, off-peak: Mondays 04:17 UTC. The odd minute avoids the top-of-hour
+  # scheduler rush (GitHub cron is UTC).
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Per-target fuzz budget in seconds (libFuzzer -max_total_time)."
+        required: false
+        default: "300"
+        type: string
+
+# Read-only: the campaign only reads the tree and uploads artifacts (artifact
+# upload uses the Actions runtime token, not a repo write scope).
+permissions:
+  contents: read
+
+# One campaign at a time: a newer dispatch cancels a superseded scheduled run
+# so two fuzzers never compete for the same runner minutes.
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The fuzz harness is its own workspace (see fuzz/README.md), so point cargo
+  # at fuzz/target. This matches the `workspaces: fuzz -> target` cache below
+  # and keeps the sanitizer-instrumented artifacts out of the main target/.
+  CARGO_TARGET_DIR: fuzz/target
+
+jobs:
+  campaign:
+    name: fuzz campaign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    # NON-BLOCKING (see header): findings must be visible but must never gate
+    # PRs or the release workflow. The job still shows as failed and its crash
+    # artifacts are uploaded with `if: always()`.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Never needed here: the campaign only reads. Avoids persisting the
+          # ephemeral GITHUB_TOKEN into .git/config (zizmor artipacked).
+          persist-credentials: false
+
+      # Same SHA-pinned dtolnay action as ci.yml/release.yml. The explicit
+      # `toolchain: nightly` overrides rust-toolchain.toml's stable 1.95 pin:
+      # cargo-fuzz adds -Zsanitizer=address and the sancov flags, which stable
+      # rustc rejects (fuzz/README.md -> Toolchain). The action also exports
+      # RUSTUP_TOOLCHAIN, but steps use `cargo +nightly` explicitly for clarity.
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: nightly
+
+      # Pinned `cargo install` instead of a third-party action: no extra action
+      # attack surface beyond the already-trusted (SHA-pinned) toolchain, the
+      # same rationale as the cargo-deny/cargo-about installs in ci.yml.
+      # 0.13.2 is the current crates.io release (verified with `cargo search`
+      # cargo-fuzz and index.crates.io); the crate publishes a Cargo.lock, so
+      # `--locked` is reproducible. rust-cache caches ${CARGO_HOME}/bin
+      # (cache-bin defaults to true), so this only compiles on a cold cache.
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+
+      # Cache the fuzz workspace's target/ (instrumented builds are expensive)
+      # plus the cargo registry and ${CARGO_HOME}/bin. `workspaces` is required
+      # because fuzz/ is a separate workspace: the default "." would cache the
+      # main crate's target/ instead. `key` mirrors the msrv job's per-variant
+      # key in ci.yml and keeps this cache out of CI's default lane.
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz -> target
+          key: fuzz
+
+      - name: Run fuzz targets
+        shell: bash
+        env:
+          # A dispatched value wins; a scheduled run (no inputs) falls back to
+          # 300 s per target. Passed through the environment, never interpolated
+          # into the script body, so zizmor's template-injection rule stays
+          # satisfied even though the value is dispatch-controlled.
+          MAX_TOTAL_TIME: ${{ inputs.max_total_time || '300' }}
+        run: |
+          set -euo pipefail
+          # Guard: positive integer in 1..=1800 only. This rejects a bad
+          # dispatch input (shell injection, zero/negative time) and bounds the
+          # 4-target worst case to ~2 h, under the 150 min job timeout.
+          if ! [[ "${MAX_TOTAL_TIME}" =~ ^[1-9][0-9]*$ ]] \
+             || (( MAX_TOTAL_TIME > 1800 )); then
+            echo "ERROR: max_total_time must be an integer in 1..=1800 (got '${MAX_TOTAL_TIME}')" >&2
+            exit 1
+          fi
+
+          # Run every target even after an earlier one reports a finding, so a
+          # single campaign surfaces all crashes; exit non-zero at the end if
+          # any did (the job is continue-on-error, so CI stays green).
+          status=0
+          for target in parse_capture unpack_body scan_container expand_payload; do
+            echo "::group::fuzz ${target} (max_total_time=${MAX_TOTAL_TIME}s, max_len=65536)"
+            if ! cargo +nightly fuzz run "${target}" -- \
+                 -max_len=65536 \
+                 -max_total_time="${MAX_TOTAL_TIME}"; then
+              echo "::error::fuzz target '${target}' reported a finding (see fuzz/artifacts/${target}/)"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+
+      # The normal outcome is "no crash", so a missing directory must NOT fail
+      # the run: `if-no-files-found: ignore` (contrast build.yml's `error`,
+      # where installers are always expected). `if: always()` uploads crashes
+      # even though the run step above exits non-zero.
+      - name: Upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/**
+          if-no-files-found: ignore
+          retention-days: 7
