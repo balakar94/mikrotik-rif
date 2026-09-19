@@ -1,0 +1,53 @@
+# Fuzz harness for the capture parser.
+#
+# This package is deliberately NOT part of the main crate's workspace: it is a
+# separate `cargo-fuzz` crate so the fuzzing-only dependencies (libFuzzer,
+# `arbitrary`) never leak into the shipped binary or its lockfile. `cargo fuzz`
+# drives it; a plain `cargo build` cannot link the targets (they are `#![no_main]`
+# and expect libFuzzer's `main` plus sanitizer coverage flags).
+[package]
+name = "mikrotik-rif-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keep fuzzing out of the parent workspace even if the root Cargo.toml ever
+# gains a `[workspace]` table. `resolver = "3"` matches edition 2024.
+[workspace]
+resolver = "3"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+mikrotik-rif = { path = ".." }
+
+[[bin]]
+name = "parse_capture"
+path = "fuzz_targets/parse_capture.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unpack_body"
+path = "fuzz_targets/unpack_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_container"
+path = "fuzz_targets/scan_container.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "expand_payload"
+path = "fuzz_targets/expand_payload.rs"
+test = false
+doc = false
+bench = false
