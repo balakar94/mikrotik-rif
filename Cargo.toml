@@ -1,7 +1,7 @@
 [package]
 name = "mikrotik-rif"
 description = "MikroTik RIF Viewer — reader for RouterOS supout captures"
-version = "0.4.2"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -9,11 +9,19 @@ authors = ["balakar94"]
 homepage = "https://github.com/balakar94/mikrotik-rif"
 readme = "README.md"
 repository = "https://github.com/balakar94/mikrotik-rif"
-exclude = ["/target", "/dist", ".github/"]
+exclude = ["/target", "/dist", ".github/", "/fuzz"]
 
 [[bin]]
 name = "mikrotik-rif"
 path = "src/main.rs"
+
+# Criterion owns the process when the bench target runs; without this stanza
+# cargo compiles it with the default libtest harness, which swallows
+# `criterion_main!` and makes `cargo bench --bench parser` run nothing (and
+# reject criterion options such as `--warm-up-time`).
+[[bench]]
+name = "parser"
+harness = false
 
 [dependencies]
 flate2 = "1.1"
@@ -41,6 +49,13 @@ open = "5"
 # On other hosts/targets embed-resource is a no-op (NotWindows).
 [build-dependencies]
 embed-resource = "3"
+
+# Property tests for the parser invariants (pack/unpack, budget monotonicity,
+# "never panics on arbitrary bytes"). Used only by `tests/` and `#[cfg(test)]`.
+[dev-dependencies]
+proptest = "1"
+# Benchmark harness for indexing and expansion; targets live in `benches/`.
+criterion = { version = "0.8", features = ["cargo_bench_support"] }
 
 [lints.rust]
 unsafe_code = "forbid"

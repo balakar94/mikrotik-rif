@@ -4,6 +4,59 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-19
+
+### Added
+
+- The capture reader is also a library now (`src/lib.rs` exposes `pub mod
+  parser`); `src/main.rs` is a thin wrapper around it. Integration tests, fuzz
+  targets, benchmarks and the headless CLI all build against the same surface.
+- Cooperative cancellation for indexing and expansion: `Cancel` tokens,
+  `Capture::from_bytes_cancellable`, `read_bytes`/`read_cached`,
+  `deflate::expand_cancellable` and `scanner::locate_parts_cancellable`, with a
+  new `RifError::Cancelled` that aborts the whole operation instead of being
+  downgraded to a per-part fault.
+- Raw decompressed bytes are reachable through `Capture::read_bytes`, so export
+  and byte-oriented callers can skip UTF-8 decoding.
+- Worker: preemptive cancellation of the in-flight index pass and expansion, a
+  worker-owned `PartCache`, the additive `Event::ExpandProgress` and
+  `Event::ExpandCancelled`, plus `Worker::cancel_expand` and
+  `Worker::cache_stats`.
+- A bounded least-recently-used expansion cache (`PartCache`, 8 entries or
+  64 MiB of retained text by default), so re-selecting a module is served
+  without a second inflation.
+- Structural container notes (`Capture::notes`) are surfaced in a dismissible
+  banner with a bounded detail list, and a search across every readable module
+  of the open capture runs on the worker with progress and cancellation.
+- Expanded modules are kept in a bounded view cache, so revisiting a module
+  opened earlier in the session is a shared-reference clone rather than a second
+  expansion.
+- Headless CLI in the same binary: `--help`/`-h`, `--list` and `--extract`
+  (`--module`/`--all`, `--out`/`--stdout`). A bare path still opens the viewer,
+  and exit codes distinguish success, operational failure and a malformed
+  command line.
+- Parser integration, property and cancellation tests under `tests/`, an opt-in
+  real-corpus test gated on `MIKROTIK_RIF_CORPUS`, a four-target `cargo-fuzz`
+  harness under `fuzz/`, Criterion benchmarks under `benches/`, and a
+  non-blocking scheduled fuzz workflow.
+- Fluent identifiers for the notes banner and the global search were added to
+  all seven locales.
+
+### Changed
+
+- Indexing transcodes each part body once into a single buffer and records the
+  compressed payload as an offset into it, instead of retaining a second copy of
+  every payload.
+- `max_line_bytes` is raised to 128 MiB so it matches `max_span_bytes`: a
+  single-line part body that fits the span budget can no longer be rejected by
+  the narrower line budget.
+- The pure view kernels `compute_view`, `next_match` and `filter_parts` are
+  re-exported from `parser`, so they can be exercised without a UI toolkit.
+
+### Fixed
+
+- Removed the dead `PartUnreadable` error variant.
+
 ## [0.4.2] - 2026-09-16
 
 ### Fixed
