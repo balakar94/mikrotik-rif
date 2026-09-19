@@ -87,15 +87,6 @@ pub enum RifError {
         position: usize,
     },
 
-    /// A part could not be indexed; the reason is kept for diagnostics.
-    #[error("part {label:?} could not be indexed: {reason}")]
-    PartUnreadable {
-        /// Placeholder label shown in listings.
-        label: String,
-        /// Human-readable reason.
-        reason: String,
-    },
-
     /// The caller asked for a part index that does not exist.
     #[error("part index {index} is out of range")]
     NoSuchPart {
@@ -139,4 +130,15 @@ pub enum RifError {
         #[source]
         source: std::io::Error,
     },
+
+    /// A caller-requested cancellation stopped the operation.
+    ///
+    /// Cancellation is cooperative and checked at coarse intervals (per line
+    /// while scanning, per part while indexing, per read chunk while
+    /// expanding), so an operation can still complete after the token was
+    /// raised if it had already passed its last checkpoint. Unlike per-part
+    /// problems, this variant aborts the whole operation and is never
+    /// downgraded to a [`crate::parser::Part`] fault.
+    #[error("operation cancelled")]
+    Cancelled,
 }

@@ -28,6 +28,14 @@ pub const BYTES_PER_GROUP: usize = 3;
 pub const SYMBOL_ALPHABET: &[u8; 65] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
 
+/// Upper bound on the eager output reservation made by [`unpack_capped`].
+///
+/// The decoded size of a body is not known until it is walked. Reserving the
+/// worst case up front would let a body that is mostly whitespace reserve memory
+/// proportional to its raw span, so the reservation is capped here and the
+/// buffer grows only as real symbols are decoded.
+const INITIAL_DECODE_RESERVE: usize = 1024 * 1024;
+
 /// Decode the six-bit value carried by one symbol.
 ///
 /// Padding (`=`) decodes to zero, matching the encoder, which pads the byte
@@ -87,59 +95,65 @@ pub fn unpack(body: &[u8]) -> Result<Vec<u8>, RifError> {
 /// Decode a part body exactly like [`unpack`], but refuse to produce more than
 /// `budget` raw bytes.
 ///
-/// The symbol stream is counted before anything is allocated, so the output
-/// buffer is reserved once at its exact size and the budget is enforced before
-/// any large allocation happens. Alignment is therefore validated up front
-/// rather than when the trailing partial group is reached.
+/// The body is walked once: each full four-symbol group is decoded as it is
+/// found, so there is no separate counting pass. The output buffer starts at an
+/// estimate capped by [`INITIAL_DECODE_RESERVE`] and by `budget`, grows as real
+/// symbols arrive, and is shrunk when the estimate overshot badly (for example
+/// when a body is mostly whitespace).
 ///
 /// # Errors
 ///
 /// Fails with [`RifError::BudgetExceeded`] when the decoded output would hold
-/// more than `budget` bytes, plus every [`unpack`] failure mode.
+/// more than `budget` bytes, [`RifError::SymbolCountUnaligned`] when the symbol
+/// count is not a multiple of four, and [`RifError::UnknownSymbol`] for a byte
+/// outside the alphabet.
+///
+/// # Behaviour change
+///
+/// The budget is checked group by group as decoding proceeds and alignment is
+/// validated only when the stream ends. A body that is both over budget and
+/// unaligned therefore reports [`RifError::BudgetExceeded`] first, where the
+/// previous two-pass implementation validated alignment before the budget. Each
+/// failure mode on its own is reported unchanged.
 pub fn unpack_capped(body: &[u8], budget: usize) -> Result<Vec<u8>, RifError> {
-    let symbols = body
-        .iter()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .count();
-    if symbols % SYMBOLS_PER_GROUP != 0 {
+    // Worst-case decoded size when the body holds no whitespace. Used only as a
+    // capacity hint, clamped so a mostly-whitespace body cannot reserve memory
+    // proportional to its raw span.
+    let upper = body.len() / SYMBOLS_PER_GROUP * BYTES_PER_GROUP;
+    let mut out: Vec<u8> = Vec::with_capacity(upper.min(budget).min(INITIAL_DECODE_RESERVE));
+
+    let mut group = [0u8; SYMBOLS_PER_GROUP];
+    let mut filled = 0usize;
+    let mut symbols = 0usize;
+
+    for &raw in body {
+        if raw.is_ascii_whitespace() {
+            continue;
+        }
+        group[filled] = raw;
+        filled += 1;
+        symbols += 1;
+        if filled == SYMBOLS_PER_GROUP {
+            // `out.len() <= budget` is an invariant of the loop, so the
+            // subtraction cannot underflow.
+            if budget - out.len() < BYTES_PER_GROUP {
+                return Err(RifError::BudgetExceeded { limit: budget });
+            }
+            out.extend_from_slice(&unpack_group(&group, symbols - SYMBOLS_PER_GROUP)?);
+            filled = 0;
+        }
+    }
+
+    if filled != 0 {
         return Err(RifError::SymbolCountUnaligned {
             symbols,
             group: SYMBOLS_PER_GROUP,
         });
     }
-    let decoded_len = symbols / SYMBOLS_PER_GROUP * BYTES_PER_GROUP;
-    if decoded_len > budget {
-        return Err(RifError::BudgetExceeded { limit: budget });
+
+    if out.capacity() > out.len().saturating_mul(2) {
+        out.shrink_to_fit();
     }
-
-    let mut symbols = body
-        .iter()
-        .copied()
-        .filter(|byte| !byte.is_ascii_whitespace());
-    let mut out = Vec::with_capacity(decoded_len);
-    let mut base = 0usize;
-
-    loop {
-        let mut group = [0u8; SYMBOLS_PER_GROUP];
-        let mut filled = 0usize;
-        while filled < SYMBOLS_PER_GROUP {
-            match symbols.next() {
-                Some(raw) => {
-                    group[filled] = raw;
-                    filled += 1;
-                }
-                None => break,
-            }
-        }
-        if filled == 0 {
-            break;
-        }
-        // Alignment was validated up front, so every trailing group is full.
-        debug_assert_eq!(filled, SYMBOLS_PER_GROUP, "symbol count was checked above");
-        out.extend_from_slice(&unpack_group(&group, base)?);
-        base += SYMBOLS_PER_GROUP;
-    }
-
     Ok(out)
 }
 
@@ -231,6 +245,26 @@ mod tests {
                 .len(),
             decoded_len
         );
+    }
+
+    #[test]
+    fn mostly_whitespace_body_does_not_retain_span_sized_capacity() {
+        let mut body = vec![b' '; 1024 * 1024];
+        body.extend_from_slice(b"AAAA");
+        let decoded = unpack_capped(&body, usize::MAX).expect("symbols must decode");
+        assert_eq!(decoded, [0, 0, 0]);
+        assert!(
+            decoded.capacity() < 4096,
+            "capacity must be shrunk to the decoded size, not the raw span"
+        );
+    }
+
+    #[test]
+    fn over_budget_unaligned_body_reports_budget_first() {
+        // Five symbols are unaligned, but the first full group already exceeds
+        // the budget, so the budget error wins under the single-pass decoder.
+        let error = unpack_capped(b"AAAAA", 2).expect_err("budget must trip");
+        assert!(matches!(error, RifError::BudgetExceeded { limit: 2 }));
     }
 
     #[test]

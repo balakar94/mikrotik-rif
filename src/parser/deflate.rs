@@ -9,6 +9,7 @@ use std::io::{ErrorKind, Read};
 use flate2::read::ZlibDecoder;
 
 use crate::parser::error::RifError;
+use crate::parser::limits::Cancel;
 
 /// Read chunk size. Small enough to stay under any UI latency budget, large
 /// enough to keep syscall-free in-memory decoding cheap.
@@ -16,16 +17,40 @@ const READ_CHUNK: usize = 32 * 1024;
 
 /// Expand a zlib payload while keeping the output under `limit` bytes.
 ///
+/// This is the non-cancellable convenience wrapper around
+/// [`expand_cancellable`]; it uses a never-cancelled token.
+///
 /// # Errors
 ///
 /// Returns [`RifError::PayloadAboveLimit`] as soon as the output would cross
 /// `limit`, and [`RifError::Deflate`] when the stream is truncated or not zlib.
 pub fn expand(payload: &[u8], limit: usize) -> Result<Vec<u8>, RifError> {
+    expand_cancellable(payload, limit, &Cancel::default())
+}
+
+/// Expand a zlib payload while keeping the output under `limit` bytes and
+/// honouring a cancellation token.
+///
+/// The token is checked once per [`READ_CHUNK`]-sized read, so a payload that
+/// expands slowly can be abandoned before the limit is reached.
+///
+/// # Errors
+///
+/// Everything [`expand`] reports, plus [`RifError::Cancelled`] when the token
+/// is raised.
+pub fn expand_cancellable(
+    payload: &[u8],
+    limit: usize,
+    cancel: &Cancel,
+) -> Result<Vec<u8>, RifError> {
     let mut decoder = ZlibDecoder::new(payload);
     let mut out: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; READ_CHUNK.min(limit.max(1))];
 
     loop {
+        if cancel.is_cancelled() {
+            return Err(RifError::Cancelled);
+        }
         match decoder.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => {
@@ -84,6 +109,16 @@ mod tests {
         let original = vec![b'x'; 4096];
         let error = expand(&deflate(&original), 1024).expect_err("limit must trip");
         assert!(matches!(error, RifError::PayloadAboveLimit { limit: 1024 }));
+    }
+
+    #[test]
+    fn a_cancelled_token_aborts_expansion() {
+        let payload = deflate(&b"routeros".repeat(1024));
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error = expand_cancellable(&payload, 1 << 20, &cancel)
+            .expect_err("a cancelled expansion must abort");
+        assert!(matches!(error, RifError::Cancelled));
     }
 
     #[test]

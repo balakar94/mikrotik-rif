@@ -6,7 +6,7 @@
 //! expect: a damaged part must not leak into the next one.
 
 use crate::parser::error::RifError;
-use crate::parser::limits::CaptureLimits;
+use crate::parser::limits::{Cancel, CaptureLimits};
 
 /// Opens a part body.
 pub const OPEN_MARKER: &[u8] = b"--BEGIN ROUTEROS SUPOUT SECTION";
@@ -105,6 +105,9 @@ fn read_line(source: &[u8], cursor: usize) -> (&[u8], usize) {
 /// Structural problems become entries in `notes`; the read only fails when a
 /// limit is exceeded or when strict marker handling is requested.
 ///
+/// This is the non-cancellable convenience wrapper around
+/// [`locate_parts_cancellable`]; it uses a never-cancelled token.
+///
 /// # Errors
 ///
 /// Returns [`RifError::UnterminatedPart`] when the last part is never closed,
@@ -115,13 +118,39 @@ pub fn locate_parts(
     limits: &CaptureLimits,
     notes: &mut Vec<ContainerNote>,
 ) -> Result<Vec<PartSpan>, RifError> {
+    locate_parts_cancellable(source, limits, notes, &Cancel::default())
+}
+
+/// Walk the container and record every part body, honouring a cancellation
+/// token.
+///
+/// The token is checked once per input line, so a scan of a very large capture
+/// can be abandoned between lines. Cancellation aborts with
+/// [`RifError::Cancelled`] rather than producing a partial span list.
+///
+/// # Errors
+///
+/// Everything [`locate_parts`] reports, plus [`RifError::Cancelled`] when the
+/// token is raised.
+pub fn locate_parts_cancellable(
+    source: &[u8],
+    limits: &CaptureLimits,
+    notes: &mut Vec<ContainerNote>,
+    cancel: &Cancel,
+) -> Result<Vec<PartSpan>, RifError> {
     let mut spans = Vec::new();
     let mut cursor = 0usize;
     let mut open: Option<usize> = None;
     let mut last_close_line_end: Option<usize> = None;
     let mut notes_seen = 0usize;
+    // `notes` may be reused across calls; only entries appended from here on
+    // were produced (and counted) by this scan.
+    let notes_at_start = notes.len();
 
     while cursor < source.len() {
+        if cancel.is_cancelled() {
+            return Err(RifError::Cancelled);
+        }
         let (line, line_end) = read_line(source, cursor);
         if line.len() > limits.max_line_bytes {
             return Err(RifError::LineTooLong {
@@ -189,8 +218,8 @@ pub fn locate_parts(
     }
 
     debug_assert!(
-        notes_seen >= notes.len(),
-        "every stored note was counted when seen"
+        notes_seen >= notes.len().saturating_sub(notes_at_start),
+        "every note stored by this scan was counted when seen"
     );
     Ok(spans)
 }
@@ -341,6 +370,36 @@ mod tests {
                 limit: 100_000
             }
         ));
+    }
+
+    #[test]
+    fn cancelled_token_aborts_the_scan() {
+        let source = body(&["AAAA"]);
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error =
+            locate_parts_cancellable(&source, &CaptureLimits::default(), &mut Vec::new(), &cancel)
+                .expect_err("a cancelled scan must abort");
+        assert!(matches!(error, RifError::Cancelled));
+    }
+
+    #[test]
+    fn a_prepopulated_notes_buffer_does_not_break_the_scan() {
+        // The buffer is reused and already full, so this scan stores nothing.
+        // The debug assertion must compare against notes added by *this* call,
+        // not the buffer length.
+        let mut notes = vec![ContainerNote::StrayClose { offset: 0 }; MAX_NOTES];
+        let mut source = Vec::new();
+        source.extend_from_slice(CLOSE_MARKER);
+        source.push(b'\n');
+        let spans = locate_parts(&source, &CaptureLimits::default(), &mut notes)
+            .expect("a full notes buffer must not break scanning");
+        assert!(spans.is_empty());
+        assert_eq!(
+            notes.len(),
+            MAX_NOTES,
+            "the cap keeps the reused buffer stable"
+        );
     }
 
     #[test]
