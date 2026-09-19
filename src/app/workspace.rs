@@ -2,7 +2,7 @@
 //!
 //! This module owns the workspace presentation: the top header, the module
 //! rail, the reading surface and the find bar, plus the pure text helpers
-//! used to index lines and to format sizes and file names.
+//! used to match text and to format sizes and file names.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -16,6 +16,7 @@ use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, TextEdit, Tex
 use fluent_bundle::FluentArgs;
 
 use crate::icons;
+use crate::parser::{next_match, scanner::ContainerNote};
 use crate::theme::{self, Palette};
 
 use super::Viewer;
@@ -37,6 +38,9 @@ impl FindState {
         !matches!(self, Self::Closed)
     }
 }
+
+/// Maximum structural oddities listed in the notes banner detail.
+const NOTES_DETAIL_LIMIT: usize = 50;
 
 impl Viewer {
     /// Top bar: the open capture, the rail toggle and the settings entry.
@@ -114,6 +118,7 @@ impl Viewer {
         let clear_hint = self.i18n.text("button-clear");
         let no_matches = self.i18n.text("empty-filter");
         let clear_label = self.i18n.text("button-clear");
+        let search_hint = self.i18n.text("button-search-all");
         let total = self.capture.as_ref().map_or(0, |capture| capture.len());
         // Translator note: `{ $position }` is the filtered count,
         // `{ $total }` is the total module count.
@@ -122,15 +127,46 @@ impl Viewer {
             .progress("label-counter", units(self.visible.len()), units(total));
 
         ui.add_space(6.0);
+        let mut toggle_search = false;
         ui.horizontal(|ui| {
             ui.label(RichText::new(&modules_label).size(15.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if icons::icon_button(
+                    ui,
+                    &palette,
+                    icons::Glyph::Magnifier,
+                    self.search.is_some(),
+                    true,
+                    &search_hint,
+                ) {
+                    toggle_search = true;
+                }
                 ui.label(RichText::new(&counter).size(12.0).color(palette.muted));
             });
         });
         ui.add_space(6.0);
 
-        if search_field(ui, &palette, &mut self.filter, &filter_hint, &clear_hint) {
+        if toggle_search {
+            if self.search.is_some() {
+                self.close_global_search();
+            } else {
+                self.search = Some(super::GlobalSearch::idle());
+            }
+        }
+
+        if self.search.is_some() {
+            self.global_search_panel(ui, &palette);
+            ui.add_space(8.0);
+        }
+
+        if search_field(
+            ui,
+            &palette,
+            &mut self.filter,
+            "module-filter",
+            &filter_hint,
+            &clear_hint,
+        ) {
             self.refresh_visible();
         }
         ui.add_space(6.0);
@@ -152,6 +188,14 @@ impl Viewer {
             return;
         }
 
+        if let Some(index) = self.module_rows(ui) {
+            self.select(index);
+        }
+    }
+
+    /// Scrollable module list; returns the row the user clicked, if any.
+    fn module_rows(&mut self, ui: &mut egui::Ui) -> Option<usize> {
+        let palette = theme::current(ui.ctx());
         // `show_rows` expects a height *without* item spacing; it adds the
         // spacing itself, so passing a padded height here breaks alignment.
         let row_height = ui.text_style_height(&TextStyle::Body);
@@ -170,25 +214,136 @@ impl Viewer {
                             .count("label-copy-suffix", units(part.ordinal() + 1))
                     };
                     let flag = if part.is_readable() { "" } else { "  ⚠" };
-                    let label = format!("{}{ordinal}{flag}", part.label());
-                    let selected = self.selected == Some(index);
-                    let text = if part.is_readable() {
-                        RichText::new(label)
+                    let hit = self
+                        .search
+                        .as_ref()
+                        .is_some_and(|search| search.hits.contains(&index));
+                    let marker = if hit {
+                        format!("  · {}", self.i18n.text("label-search-hit"))
                     } else {
+                        String::new()
+                    };
+                    let label = format!("{}{ordinal}{flag}{marker}", part.label());
+                    let selected = self.selected == Some(index);
+                    let text = if !part.is_readable() {
                         RichText::new(label).color(palette.danger)
+                    } else if hit {
+                        RichText::new(label).color(palette.accent)
+                    } else {
+                        RichText::new(label)
                     };
                     if ui.selectable_label(selected, text).clicked() {
                         chosen = Some(index);
                     }
                 }
             });
+        chosen
+    }
 
-        if let Some(index) = chosen {
-            self.select(index);
+    /// Search across every module: an explicit query field, a scan control and
+    /// a progress/result line. The scan only starts when the user asks for it.
+    fn global_search_panel(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let hint = self.i18n.text("hint-search-all");
+        let run_label = self.i18n.text("button-search-all-run");
+        let cancel_label = self.i18n.text("button-cancel");
+        let clear_hint = self.i18n.text("button-clear");
+        let scanning = self
+            .search
+            .as_ref()
+            .is_some_and(super::GlobalSearch::is_scanning);
+        let has_query = !self.search_query.trim().is_empty();
+
+        let mut run = false;
+        let mut cancel = false;
+        let mut clear = false;
+
+        let frame = egui::Frame::NONE
+            .fill(palette.card)
+            .stroke(egui::Stroke::new(1.0, palette.card_hover))
+            .corner_radius(9.0)
+            .inner_margin(egui::Margin::symmetric(10, 5));
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let reserve = 32.0;
+                let width = (ui.available_width() - reserve).max(80.0);
+                let response = ui.add(
+                    TextEdit::singleline(&mut self.search_query)
+                        .id(egui::Id::new("global-search"))
+                        .frame(egui::Frame::NONE)
+                        .hint_text(hint.as_str())
+                        .desired_width(width)
+                        .margin(egui::Margin::symmetric(2, 4)),
+                );
+                if response.lost_focus()
+                    && !scanning
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    run = true;
+                }
+                if response.changed() && !scanning {
+                    self.search = Some(super::GlobalSearch::idle());
+                }
+                if !self.search_query.is_empty()
+                    && icons::icon_button(
+                        ui,
+                        palette,
+                        icons::Glyph::Close,
+                        false,
+                        true,
+                        &clear_hint,
+                    )
+                {
+                    clear = true;
+                }
+            });
+        });
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if scanning {
+                if ui.button(cancel_label.as_str()).clicked() {
+                    cancel = true;
+                }
+            } else if ui
+                .add_enabled(has_query, egui::Button::new(run_label.as_str()))
+                .clicked()
+            {
+                run = true;
+            }
+            let status = match &self.search {
+                Some(search) if search.is_scanning() => self.i18n.progress(
+                    "search-all-progress",
+                    units(search.scanned),
+                    units(search.total),
+                ),
+                Some(search) if !search.needle.is_empty() => {
+                    if search.hits.is_empty() {
+                        self.i18n.text("search-all-no-hits")
+                    } else {
+                        self.i18n.count("search-all-hits", units(search.hits.len()))
+                    }
+                }
+                _ => String::new(),
+            };
+            if !status.is_empty() {
+                ui.label(RichText::new(status).size(11.5).color(palette.muted));
+            }
+        });
+
+        if clear {
+            self.search_query.clear();
+            self.search = Some(super::GlobalSearch::idle());
+        }
+        if cancel {
+            self.close_global_search();
+        } else if run {
+            self.start_global_search();
         }
     }
 
     pub(crate) fn reading_surface(&mut self, ui: &mut egui::Ui) {
+        self.container_notes(ui);
         if self.selected.is_none() {
             self.show_no_selection(ui);
             return;
@@ -347,6 +502,100 @@ impl Viewer {
         }
     }
 
+    /// Surface structural oddities the scanner recorded for this capture.
+    ///
+    /// The banner is dismissible per capture and its detail list is bounded, so
+    /// an odd container can never flood the interface. An empty or missing note
+    /// list simply draws nothing.
+    fn container_notes(&mut self, ui: &mut egui::Ui) {
+        if self.notes == super::NotesState::Dismissed {
+            return;
+        }
+        let count = self
+            .capture
+            .as_ref()
+            .map_or(0, |capture| capture.notes().len());
+        if count == 0 {
+            return;
+        }
+
+        let palette = theme::current(ui.ctx());
+        let warning = self.i18n.count("notes-warning", units(count));
+        let expanded = self.notes == super::NotesState::Expanded;
+        let toggle_label = if expanded {
+            self.i18n.text("notes-details-hide")
+        } else {
+            self.i18n.text("notes-details-show")
+        };
+        let dismiss_hint = self.i18n.text("notes-dismiss");
+        let shown = count.min(NOTES_DETAIL_LIMIT);
+        let remaining = count - shown;
+        let details = if expanded {
+            self.capture
+                .as_ref()
+                .map_or_else(Vec::new, |capture| note_details(capture.notes(), shown))
+        } else {
+            Vec::new()
+        };
+
+        let mut toggle = false;
+        let mut dismiss = false;
+        let frame = egui::Frame::NONE
+            .fill(palette.card)
+            .stroke(egui::Stroke::new(1.0, palette.card_hover))
+            .corner_radius(8.0)
+            .inner_margin(egui::Margin::symmetric(10, 6));
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&warning).size(12.5).color(palette.muted));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if icons::icon_button(
+                        ui,
+                        &palette,
+                        icons::Glyph::Close,
+                        false,
+                        true,
+                        &dismiss_hint,
+                    ) {
+                        dismiss = true;
+                    }
+                    if ui.button(toggle_label.as_str()).clicked() {
+                        toggle = true;
+                    }
+                });
+            });
+            if !details.is_empty() {
+                ui.add_space(2.0);
+                for &(kind_id, offset) in &details {
+                    let mut args = FluentArgs::new();
+                    args.set("kind", self.i18n.text(kind_id));
+                    args.set("offset", to_number(units(offset)));
+                    ui.label(
+                        RichText::new(self.i18n.render("notes-entry", &args))
+                            .size(12.0)
+                            .color(palette.muted),
+                    );
+                }
+                if remaining > 0 {
+                    let more = self.i18n.count("notes-more", units(remaining));
+                    ui.label(RichText::new(more).size(11.5).color(palette.muted));
+                }
+            }
+        });
+
+        if toggle {
+            self.notes = match self.notes {
+                super::NotesState::Expanded => super::NotesState::Collapsed,
+                super::NotesState::Collapsed | super::NotesState::Dismissed => {
+                    super::NotesState::Expanded
+                }
+            };
+        }
+        if dismiss {
+            self.notes = super::NotesState::Dismissed;
+        }
+    }
+
     /// In-module search: one rounded card holding the magnifier, an inline
     /// field, the match counter and compact icon controls.
     fn find_bar(&mut self, ui: &mut egui::Ui) {
@@ -437,12 +686,10 @@ impl Viewer {
             });
         });
 
-        if step != 0 && total > 0 {
-            self.match_cursor = if step > 0 {
-                (self.match_cursor + 1) % total
-            } else {
-                self.match_cursor.checked_sub(1).unwrap_or(total - 1)
-            };
+        if step != 0
+            && let Some(cursor) = next_match(total, self.match_cursor, step)
+        {
+            self.match_cursor = cursor;
             self.scroll_to_line = self.matches.get(self.match_cursor).copied();
         }
         if clear {
@@ -475,12 +722,16 @@ impl Viewer {
         // not flicker as different rows enter and leave the viewport.
         let char_width = ui.ctx().fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
         let gutter_chars = if gutter { 8 } else { 0 };
-        let content_width = (gutter_chars + self.max_line_chars) as f32 * char_width;
 
-        let (text, line_starts) = match &self.body {
-            Some(body) => (body.text.as_str(), &self.line_starts),
+        let (text, line_starts, max_line_chars) = match &self.body {
+            Some(body) => (
+                body.text.text.as_str(),
+                &body.line_starts,
+                body.max_line_chars,
+            ),
             None => return,
         };
+        let content_width = (gutter_chars + max_line_chars) as f32 * char_width;
         let lines = line_starts.len();
 
         let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
@@ -532,13 +783,13 @@ impl Viewer {
         if !needle.is_empty()
             && let Some(body) = &self.body
         {
-            for (row, &start) in self.line_starts.iter().enumerate() {
-                let end = self
+            for (row, &start) in body.line_starts.iter().enumerate() {
+                let end = body
                     .line_starts
                     .get(row + 1)
                     .copied()
-                    .unwrap_or(body.text.len());
-                if find_case_insensitive(&body.text[start..end], &needle, 0).is_some() {
+                    .unwrap_or(body.text.text.len());
+                if find_case_insensitive(&body.text.text[start..end], &needle, 0).is_some() {
                     found.push(row);
                 }
             }
@@ -646,6 +897,7 @@ fn search_field(
     ui: &mut egui::Ui,
     palette: &Palette,
     text: &mut String,
+    id: &str,
     hint: &str,
     clear_hint: &str,
 ) -> bool {
@@ -665,7 +917,7 @@ fn search_field(
             let width = (ui.available_width() - reserve).max(80.0);
             let response = ui.add(
                 TextEdit::singleline(text)
-                    .id(egui::Id::new("module-filter"))
+                    .id(egui::Id::new(id))
                     .frame(egui::Frame::NONE)
                     .hint_text(hint.to_owned())
                     .desired_width(width)
@@ -685,35 +937,10 @@ fn search_field(
     changed
 }
 
-/// Byte offsets at which each line starts.
-pub(crate) fn line_starts(text: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (offset, byte) in text.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(offset + 1);
-        }
-    }
-    starts
-}
-
-/// Length in characters of the longest line, ignoring line endings.
-///
-/// The text view multiplies this by the monospace advance to know how wide the
-/// scrollable content is, independently of which rows happen to be on screen.
-pub(crate) fn max_line_length(text: &str, starts: &[usize]) -> usize {
-    let mut longest = 0;
-    for (row, &start) in starts.iter().enumerate() {
-        let end = starts.get(row + 1).copied().unwrap_or(text.len());
-        let raw = &text[start..end];
-        let line = raw.strip_suffix('\n').unwrap_or(raw);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        longest = longest.max(line.chars().count());
-    }
-    longest
-}
-
 /// Find `needle` in `hay` from `from`, ignoring ASCII case.
-fn find_case_insensitive(hay: &str, needle: &str, from: usize) -> Option<usize> {
+///
+/// Also used by the search across all modules in `app.rs`.
+pub(crate) fn find_case_insensitive(hay: &str, needle: &str, from: usize) -> Option<usize> {
     let haystack = hay.as_bytes();
     let needle = needle.as_bytes();
     if needle.is_empty() || haystack.len() < needle.len() {
@@ -725,6 +952,33 @@ fn find_case_insensitive(hay: &str, needle: &str, from: usize) -> Option<usize> 
     }
     (from..=last)
         .find(|&offset| haystack[offset..offset + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+/// Fluent identifier naming the kind of a container note.
+fn note_kind_id(note: &ContainerNote) -> &'static str {
+    match note {
+        ContainerNote::NestedOpen { .. } => "note-kind-nested-open",
+        ContainerNote::StrayClose { .. } => "note-kind-stray-close",
+        ContainerNote::TrailingText { .. } => "note-kind-trailing-text",
+    }
+}
+
+/// Byte offset a container note points at.
+fn note_offset(note: &ContainerNote) -> usize {
+    match note {
+        ContainerNote::NestedOpen { offset }
+        | ContainerNote::StrayClose { offset }
+        | ContainerNote::TrailingText { offset } => *offset,
+    }
+}
+
+/// Bounded `(kind identifier, offset)` pairs for the notes detail list.
+fn note_details(notes: &[ContainerNote], limit: usize) -> Vec<(&'static str, usize)> {
+    notes
+        .iter()
+        .take(limit)
+        .map(|note| (note_kind_id(note), note_offset(note)))
+        .collect()
 }
 
 /// Append one line to a layout job, marking every match of `query`.
@@ -858,18 +1112,19 @@ pub(crate) fn human_size_u64(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::compute_view;
 
     #[test]
-    fn line_starts_covers_every_line() {
-        assert_eq!(line_starts(""), vec![0]);
-        assert_eq!(line_starts("a\nb\n"), vec![0, 2, 4]);
-        assert_eq!(line_starts("a\nb"), vec![0, 2]);
+    fn compute_view_covers_every_line_start() {
+        assert_eq!(compute_view("").0, vec![0]);
+        assert_eq!(compute_view("a\nb\n").0, vec![0, 2, 4]);
+        assert_eq!(compute_view("a\nb").0, vec![0, 2]);
     }
 
     #[test]
-    fn max_line_length_ignores_line_endings() {
-        let text = "a\r\nlonger line\nx";
-        assert_eq!(max_line_length(text, &line_starts(text)), 11);
+    fn compute_view_ignores_line_endings_when_measuring_width() {
+        let (_, longest) = compute_view("a\r\nlonger line\nx");
+        assert_eq!(longest, 11);
     }
 
     #[test]
@@ -878,6 +1133,42 @@ mod tests {
         assert_eq!(find_case_insensitive("aXbXc", "x", 0), Some(1));
         assert_eq!(find_case_insensitive("aXbXc", "x", 2), Some(3));
         assert_eq!(find_case_insensitive("abc", "z", 0), None);
+    }
+
+    #[test]
+    fn note_details_are_empty_for_an_empty_capture() {
+        assert!(note_details(&[], NOTES_DETAIL_LIMIT).is_empty());
+    }
+
+    #[test]
+    fn note_details_map_every_kind_and_offset() {
+        let notes = [
+            ContainerNote::NestedOpen { offset: 12 },
+            ContainerNote::StrayClose { offset: 34 },
+            ContainerNote::TrailingText { offset: 56 },
+        ];
+        assert_eq!(
+            note_details(&notes, NOTES_DETAIL_LIMIT),
+            vec![
+                ("note-kind-nested-open", 12),
+                ("note-kind-stray-close", 34),
+                ("note-kind-trailing-text", 56),
+            ]
+        );
+    }
+
+    #[test]
+    fn note_details_respect_the_display_limit() {
+        let notes = [
+            ContainerNote::NestedOpen { offset: 1 },
+            ContainerNote::StrayClose { offset: 2 },
+            ContainerNote::TrailingText { offset: 3 },
+        ];
+        assert_eq!(
+            note_details(&notes, 2),
+            vec![("note-kind-nested-open", 1), ("note-kind-stray-close", 2)]
+        );
+        assert!(note_details(&notes, 0).is_empty());
     }
 
     #[test]

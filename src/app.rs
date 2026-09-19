@@ -14,6 +14,7 @@ mod settings;
 mod update_ui;
 mod workspace;
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,7 +22,9 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, ThemePreference};
 use fluent_bundle::FluentArgs;
 
 use crate::i18n::I18n;
-use crate::parser::{Capture, CaptureLimits, Part, PartText};
+use crate::parser::{
+    Capture, CaptureLimits, Part, PartText, compute_view, filter_parts, next_match,
+};
 use crate::update::{self, ReleaseInfo};
 
 use crate::splash::{self, ScanView};
@@ -31,7 +34,7 @@ use crate::worker::{Event, Worker};
 use self::settings::SettingsTab;
 use self::update_ui::{CheckState, DownloadState};
 use self::workspace::{
-    FindState, human_size_u64, line_starts, max_line_length, sanitize, to_number, units,
+    FindState, find_case_insensitive, human_size_u64, sanitize, to_number, units,
 };
 use crate::worker::MAX_CAPTURE_BYTES;
 
@@ -70,6 +73,81 @@ const LANGUAGE_KEY: &str = "app.language";
 struct Notice {
     message: String,
     is_error: bool,
+}
+
+/// Expanded module text plus the line index the reading surface needs.
+///
+/// Cached per module index so returning to an already-expanded module is an
+/// `Arc` clone and never re-indexes the text. [`PartText`] is shared, so the
+/// worker can hand back either an owned text or an [`Arc`] without the cache
+/// depending on which one the worker contract uses.
+struct BodyView {
+    /// Expanded text.
+    text: Arc<PartText>,
+    /// Byte offset at which each line starts.
+    line_starts: Vec<usize>,
+    /// Longest line in characters, ignoring line endings.
+    max_line_chars: usize,
+}
+
+/// Number of expanded modules kept in the view cache.
+const VIEW_CACHE_ENTRIES: usize = 8;
+
+/// Byte budget for cached expanded module text.
+const VIEW_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Display state of the structural-notes banner for the open capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NotesState {
+    /// One-line warning, detail list hidden.
+    Collapsed,
+    /// Detail list visible.
+    Expanded,
+    /// Hidden until another capture is opened.
+    Dismissed,
+}
+
+/// State of a search across every module of the open capture.
+///
+/// Modules are expanded one at a time through the worker, so a large capture
+/// is scanned without blocking the interface and the scan can be cancelled at
+/// any point between modules. The partial hit set is only annotated once the
+/// scan has finished, so an incomplete list never masquerades as a full one.
+struct GlobalSearch {
+    /// Query used for the substring test.
+    needle: String,
+    /// Readable module indices not yet scanned.
+    pending: VecDeque<usize>,
+    /// Module index whose expansion the search is waiting on.
+    in_flight: Option<usize>,
+    /// Module indices whose expanded text contains the query.
+    hits: HashSet<usize>,
+    /// Modules scanned so far.
+    scanned: usize,
+    /// Readable modules to scan in total.
+    total: usize,
+    /// Whether the scan finished (or never started).
+    done: bool,
+}
+
+impl GlobalSearch {
+    /// An idle search: no query, no hits, nothing to scan.
+    fn idle() -> Self {
+        Self {
+            needle: String::new(),
+            pending: VecDeque::new(),
+            in_flight: None,
+            hits: HashSet::new(),
+            scanned: 0,
+            total: 0,
+            done: true,
+        }
+    }
+
+    /// Whether the scan is still expanding modules.
+    const fn is_scanning(&self) -> bool {
+        !self.done
+    }
 }
 
 /// Why a capture path was rejected before indexing.
@@ -145,12 +223,20 @@ pub struct Viewer {
     // Capture.
     capture: Option<Arc<Capture>>,
     source: Option<PathBuf>,
+    /// Owned labels of [`Self::capture`], cached at index time so the module
+    /// filter can match without rebuilding a `Vec<String>` on every keystroke.
+    labels: Vec<String>,
     filter: String,
     visible: Vec<usize>,
     selected: Option<usize>,
-    body: Option<PartText>,
-    line_starts: Vec<usize>,
-    max_line_chars: usize,
+    body: Option<Arc<BodyView>>,
+    /// Expanded text and line index per module index, so revisiting a module
+    /// is an `Arc` clone instead of a re-expansion and a re-index.
+    views: HashMap<usize, Arc<BodyView>>,
+    /// Insertion order of [`Self::views`] keys, for bounded eviction.
+    view_order: VecDeque<usize>,
+    /// Retained text bytes currently held by [`Self::views`].
+    view_bytes: usize,
     find: String,
     matches: Vec<usize>,
     match_cursor: usize,
@@ -164,6 +250,14 @@ pub struct Viewer {
     gutter: bool,
     rail_open: bool,
     find_state: FindState,
+    /// Structural-notes banner state for the open capture.
+    notes: NotesState,
+    /// Query text for the search across all modules.
+    search_query: String,
+    /// Search across all modules; `Some` while its panel is open.
+    search: Option<GlobalSearch>,
+    /// Module the user selected while a global search owned the worker.
+    deferred_view: Option<usize>,
     /// A captured panic waiting for the user to dismiss it, if any.
     panic_report: Option<crate::panic::PanicReport>,
 
@@ -225,12 +319,14 @@ impl Viewer {
             home_error: None,
             capture: None,
             source: None,
+            labels: Vec::new(),
             filter: String::new(),
             visible: Vec::new(),
             selected: None,
             body: None,
-            line_starts: Vec::new(),
-            max_line_chars: 0,
+            views: HashMap::new(),
+            view_order: VecDeque::new(),
+            view_bytes: 0,
             find: String::new(),
             matches: Vec::new(),
             match_cursor: 0,
@@ -242,6 +338,10 @@ impl Viewer {
             gutter: true,
             rail_open: true,
             find_state: FindState::Closed,
+            notes: NotesState::Collapsed,
+            search_query: String::new(),
+            search: None,
+            deferred_view: None,
             panic_report: None,
             theme_pref: ThemePreference::System,
             language: String::new(),
@@ -321,15 +421,21 @@ impl Viewer {
         self.fade_at = Some(self.last_time);
         self.home_error = None;
         self.capture = None;
+        self.labels.clear();
         self.body = None;
-        self.line_starts.clear();
-        self.max_line_chars = 0;
+        self.views.clear();
+        self.view_order.clear();
+        self.view_bytes = 0;
         self.matches.clear();
         self.visible.clear();
         self.selected = None;
         self.pending_expand = None;
         self.busy = None;
         self.notice = None;
+        self.notes = NotesState::Collapsed;
+        self.search_query.clear();
+        self.search = None;
+        self.deferred_view = None;
         self.read_received = 0;
         self.read_total = None;
         self.scan_started = self.last_time;
@@ -352,10 +458,38 @@ impl Viewer {
             .expand_with_seq(capture, index, self.limits, seq);
     }
 
-    /// Select a module and expand it.
+    /// Select a module and show it, expanding only on a cache miss.
     fn select(&mut self, index: usize) {
         self.selected = Some(index);
+        if let Some(view) = self.cached_view(index) {
+            self.pending_expand = None;
+            if !self.search.as_ref().is_some_and(GlobalSearch::is_scanning) {
+                self.busy = None;
+            }
+            self.show_view(view);
+            return;
+        }
+        if self.search.as_ref().is_some_and(GlobalSearch::is_scanning) {
+            // The search owns the worker; remember the choice and honour it
+            // once the scan settles.
+            self.pending_expand = None;
+            self.deferred_view = Some(index);
+            self.body = None;
+            return;
+        }
         self.request_expand(index);
+    }
+
+    /// Show a cached view without touching the worker.
+    fn show_view(&mut self, view: Arc<BodyView>) {
+        self.body = Some(view);
+        self.scroll_to_line = Some(0);
+        self.recompute_matches();
+    }
+
+    /// Cached expanded view for `index`, if the cache still holds it.
+    fn cached_view(&self, index: usize) -> Option<Arc<BodyView>> {
+        self.views.get(&index).map(Arc::clone)
     }
 
     /// Apply every event that arrived since the last frame.
@@ -364,74 +498,294 @@ impl Viewer {
             let Some(event) = self.worker.poll() else {
                 return;
             };
+            // `Event` is owned by the worker and is only ever extended. Every
+            // current variant is handled; the wildcard keeps the thread
+            // compiling when an additive variant lands before it is handled.
+            #[allow(unreachable_patterns)]
             match event {
-                Event::Reading { received, total } => {
+                Event::Reading {
+                    received, total, ..
+                } => {
                     self.read_received = received;
                     self.read_total = total;
                 }
-                Event::Indexed { path, capture } => {
+                Event::Indexed { path, capture, .. } => {
                     let modules = units(capture.len());
+                    self.labels = capture
+                        .parts()
+                        .iter()
+                        .map(|part| part.label().to_owned())
+                        .collect();
                     self.capture = Some(capture);
                     self.source = Some(path);
                     self.scan_min_until = Some(
                         (self.scan_started + SCAN_MIN_SECONDS)
                             .max(self.last_time + SCAN_HOLD_SECONDS),
                     );
+                    // A new index invalidates every cached view.
+                    self.views.clear();
+                    self.view_order.clear();
+                    self.view_bytes = 0;
+                    self.notes = NotesState::Collapsed;
                     let message = self.i18n.count("status-indexed", modules);
                     self.set_notice(message, false);
                 }
-                Event::IndexFailed { path, reason } => {
+                Event::IndexFailed { path, reason, .. } => {
                     self.stage = Stage::Home;
                     self.fade_at = Some(self.last_time);
                     self.capture = None;
+                    self.labels.clear();
                     self.set_notice(String::new(), false);
                     let message = self.message_with_path("error-open", &path, &reason);
                     self.home_error = Some(message);
                 }
-                Event::Expanded { index, text } => {
-                    if self.pending_expand == Some(index) {
-                        self.pending_expand = None;
-                        self.busy = None;
-                        self.set_body(text);
-                    }
+                Event::Expanded { index, text, .. } => self.on_expanded(index, text),
+                Event::ExpandFailed { index, reason, .. } => {
+                    self.on_expand_failed(index, reason);
                 }
-                Event::ExpandFailed { index, reason } => {
-                    if self.pending_expand == Some(index) {
-                        self.pending_expand = None;
-                        self.busy = None;
-                        self.body = None;
+                Event::ExpandProgress {
+                    index,
+                    received,
+                    total,
+                } => {
+                    // The parser has no incremental expander yet, so this is a
+                    // coarse signal with `received == 0` and `total == None`;
+                    // once a size is known, the footer reports real progress.
+                    if self.pending_expand == Some(index)
+                        && let Some(total) = total.filter(|total| *total > 0)
+                    {
                         let mut args = FluentArgs::new();
-                        args.set("index", to_number(units(index)));
-                        args.set("reason", reason);
-                        let message = self.i18n.render("error-module", &args);
-                        self.set_notice(message, true);
+                        args.set("done", human_size_u64(received));
+                        args.set("total", human_size_u64(total));
+                        self.busy = Some(self.i18n.render("detail-read-of", &args));
                     }
                 }
+                Event::ExpandCancelled { index } => self.on_expand_cancelled(index),
+                _ => {}
             }
         }
     }
 
-    fn set_body(&mut self, text: PartText) {
-        self.line_starts = line_starts(&text.text);
-        self.max_line_chars = max_line_length(&text.text, &self.line_starts);
-        self.body = Some(text);
-        self.scroll_to_line = Some(0);
-        self.recompute_matches();
+    /// Apply one successful expansion to the view or to the running search.
+    fn on_expanded<T: Into<Arc<PartText>>>(&mut self, index: usize, text: T) {
+        let text = text.into();
+        if self.search.as_ref().and_then(|search| search.in_flight) == Some(index) {
+            let hit = self.search.as_ref().is_some_and(|search| {
+                find_case_insensitive(&text.text, &search.needle, 0).is_some()
+            });
+            if let Some(search) = self.search.as_mut() {
+                search.in_flight = None;
+                search.scanned += 1;
+                if hit {
+                    search.hits.insert(index);
+                }
+            }
+            self.advance_search();
+            return;
+        }
+        if self.pending_expand == Some(index) {
+            self.pending_expand = None;
+            self.busy = None;
+            self.set_body(index, text);
+        }
     }
 
-    fn refresh_visible(&mut self) {
-        let Some(capture) = &self.capture else {
-            self.visible.clear();
+    /// Apply one failed expansion to the view or to the running search.
+    fn on_expand_failed(&mut self, index: usize, reason: String) {
+        if self.search.as_ref().and_then(|search| search.in_flight) == Some(index) {
+            if let Some(search) = self.search.as_mut() {
+                search.in_flight = None;
+                search.scanned += 1;
+            }
+            self.advance_search();
+            return;
+        }
+        if self.pending_expand == Some(index) {
+            self.pending_expand = None;
+            self.busy = None;
+            self.body = None;
+            let mut args = FluentArgs::new();
+            args.set("index", to_number(units(index)));
+            args.set("reason", reason);
+            let message = self.i18n.render("error-module", &args);
+            self.set_notice(message, true);
+        }
+    }
+
+    /// Settle the view after an expansion was cancelled.
+    fn on_expand_cancelled(&mut self, index: usize) {
+        if self.search.as_ref().and_then(|search| search.in_flight) == Some(index) {
+            if let Some(search) = self.search.as_mut() {
+                search.in_flight = None;
+                search.done = true;
+            }
+            self.settle_search();
+            return;
+        }
+        if self.pending_expand == Some(index) {
+            self.pending_expand = None;
+            self.busy = None;
+        }
+    }
+
+    /// Store an expanded module so a later revisit is an `Arc` clone.
+    fn set_body<T: Into<Arc<PartText>>>(&mut self, index: usize, text: T) {
+        let text = text.into();
+        // One kernel yields both the line starts and the longest line in
+        // characters, exactly the pair the reading surface scrolls against.
+        let (line_starts, max_line_chars) = compute_view(&text.text);
+        let view = Arc::new(BodyView {
+            text,
+            line_starts,
+            max_line_chars,
+        });
+        self.remember_view(index, &view);
+        self.show_view(view);
+    }
+
+    /// Insert a view into the bounded cache, evicting the oldest entries.
+    fn remember_view(&mut self, index: usize, view: &Arc<BodyView>) {
+        let size = view.text.text.len();
+        if let Some(old) = self.views.insert(index, Arc::clone(view)) {
+            self.view_bytes = self.view_bytes.saturating_sub(old.text.text.len());
+        } else {
+            self.view_order.push_back(index);
+        }
+        self.view_bytes = self.view_bytes.saturating_add(size);
+        while self.view_order.len() > VIEW_CACHE_ENTRIES || self.view_bytes > VIEW_CACHE_BYTES {
+            let Some(oldest) = self.view_order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.views.remove(&oldest) {
+                self.view_bytes = self.view_bytes.saturating_sub(removed.text.text.len());
+            }
+        }
+    }
+
+    /// Start a search across every readable module of the open capture.
+    fn start_global_search(&mut self) {
+        let Some(capture) = self.capture.clone() else {
             return;
         };
-        let needle = self.filter.trim().to_lowercase();
-        self.visible = capture
+        let needle = self.search_query.trim().to_owned();
+        if needle.is_empty() {
+            self.search = Some(GlobalSearch::idle());
+            return;
+        }
+        let pending: VecDeque<usize> = capture
             .parts()
             .iter()
             .enumerate()
-            .filter(|(_, part)| needle.is_empty() || part.label().to_lowercase().contains(&needle))
+            .filter(|(_, part)| part.is_readable())
             .map(|(index, _)| index)
             .collect();
+        let total = pending.len();
+        self.search = Some(GlobalSearch {
+            needle,
+            pending,
+            in_flight: None,
+            hits: HashSet::new(),
+            scanned: 0,
+            total,
+            done: total == 0,
+        });
+        self.deferred_view = None;
+        self.advance_search();
+    }
+
+    /// Queue the next search expansion, or settle once the list drains.
+    fn advance_search(&mut self) {
+        if self.search.as_ref().is_none_or(|search| search.done) {
+            self.settle_search();
+            return;
+        }
+        let Some(capture) = self.capture.clone() else {
+            if let Some(search) = self.search.as_mut() {
+                search.done = true;
+            }
+            self.settle_search();
+            return;
+        };
+        let next = {
+            let Some(search) = self.search.as_mut() else {
+                return;
+            };
+            if search.in_flight.is_some() {
+                return;
+            }
+            if let Some(index) = search.pending.pop_front() {
+                search.in_flight = Some(index);
+                Some(index)
+            } else {
+                search.done = true;
+                None
+            }
+        };
+        let Some(index) = next else {
+            self.settle_search();
+            return;
+        };
+        self.expand_seq = self.expand_seq.wrapping_add(1);
+        let seq = self.expand_seq;
+        self.busy = Some(self.search_progress());
+        self.worker
+            .expand_with_seq(capture, index, self.limits, seq);
+    }
+
+    /// Progress text for the running search.
+    fn search_progress(&self) -> String {
+        match &self.search {
+            Some(search) => self.i18n.progress(
+                "search-all-progress",
+                units(search.scanned),
+                units(search.total),
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// Mark the search finished, report the hit count and resume any deferred
+    /// module selection.
+    fn settle_search(&mut self) {
+        self.busy = None;
+        let Some(search) = &self.search else {
+            return;
+        };
+        let message = if search.hits.is_empty() {
+            self.i18n.text("search-all-no-hits")
+        } else {
+            self.i18n.count("search-all-hits", units(search.hits.len()))
+        };
+        self.set_notice(message, false);
+        if let Some(index) = self.deferred_view.take()
+            && self.selected == Some(index)
+        {
+            self.request_expand(index);
+        }
+    }
+
+    /// Cancel the running search and close its panel.
+    fn close_global_search(&mut self) {
+        self.search = None;
+        self.busy = None;
+        // Stop an in-flight inflation instead of letting it run to completion.
+        self.worker.cancel_expand();
+        if let Some(index) = self.deferred_view.take()
+            && self.selected == Some(index)
+        {
+            self.request_expand(index);
+        }
+    }
+
+    fn refresh_visible(&mut self) {
+        if self.capture.is_none() {
+            self.visible.clear();
+            return;
+        }
+        // `self.labels` mirrors the capture's parts one-to-one (built at index
+        // time), so the tested filter kernel drives the rail without rebuilding
+        // a `Vec<String>` of labels on every keystroke.
+        self.visible = filter_parts(&self.labels, &self.filter);
     }
 
     /// Move from the animation to the workspace once indexing is done.
@@ -498,8 +852,8 @@ impl Viewer {
 
     fn copy_body(&mut self, ctx: &egui::Context) {
         if let Some(body) = &self.body {
-            let bytes = units(body.text.len());
-            let text = body.text.clone();
+            let bytes = units(body.text.text.len());
+            let text = body.text.text.clone();
             ctx.copy_text(text);
             let message = self.i18n.count("status-copied", bytes);
             self.set_notice(message, false);
@@ -516,7 +870,7 @@ impl Viewer {
         };
         let outcome = match self.body.as_ref() {
             Some(body) => {
-                std::fs::write(&path, body.text.as_bytes()).map_err(|error| error.to_string())
+                std::fs::write(&path, body.text.text.as_bytes()).map_err(|error| error.to_string())
             }
             None => return,
         };
@@ -576,12 +930,10 @@ impl Viewer {
             return;
         }
         let total = self.matches.len();
-        self.match_cursor = match step.cmp(&0) {
-            std::cmp::Ordering::Greater => (self.match_cursor + 1) % total,
-            std::cmp::Ordering::Less => self.match_cursor.checked_sub(1).unwrap_or(total - 1),
-            std::cmp::Ordering::Equal => self.match_cursor.min(total - 1),
-        };
-        self.scroll_to_line = self.matches.get(self.match_cursor).copied();
+        if let Some(cursor) = next_match(total, self.match_cursor, step) {
+            self.match_cursor = cursor;
+            self.scroll_to_line = self.matches.get(self.match_cursor).copied();
+        }
     }
 
     fn handle_shortcuts(&mut self, ui: &mut egui::Ui) {
@@ -838,6 +1190,7 @@ impl eframe::App for Viewer {
         self.overlays(ui.ctx(), &palette);
         if self.busy.is_some()
             || self.stage == Stage::Scanning
+            || self.search.as_ref().is_some_and(GlobalSearch::is_scanning)
             || !matches!(self.check, CheckState::Idle)
             || !matches!(self.download, DownloadState::Idle)
         {
@@ -967,5 +1320,38 @@ mod tests {
         assert_eq!(sanitize_etag_value("etag\r\ninjected"), None);
         assert_eq!(sanitize_etag_value("café"), None);
         assert_eq!(sanitize_etag_value("with space\x7F"), None);
+    }
+
+    #[test]
+    fn idle_global_search_is_not_scanning() {
+        let search = GlobalSearch::idle();
+        assert!(!search.is_scanning());
+        assert!(search.needle.is_empty());
+        assert!(search.hits.is_empty());
+        assert!(search.pending.is_empty());
+        assert!(search.in_flight.is_none());
+    }
+
+    #[test]
+    fn global_search_hit_test_matches_the_ascii_insensitive_matcher() {
+        let needle = "eth";
+        assert!(find_case_insensitive("Ether1", needle, 0).is_some());
+        assert!(find_case_insensitive("no match here", needle, 0).is_none());
+    }
+
+    #[test]
+    fn new_messages_parse_and_pluralize() {
+        let i18n = I18n::for_language("en");
+        assert_eq!(i18n.count("notes-warning", 1), "1 structural oddity found");
+        assert_eq!(
+            i18n.count("notes-warning", 3),
+            "3 structural oddities found"
+        );
+        assert_eq!(i18n.count("search-all-hits", 1), "1 module matches");
+        assert_eq!(i18n.count("search-all-hits", 4), "4 modules match");
+        // A raw identifier would mean Fluent rejected the message and fell
+        // through to the id fallback.
+        assert_ne!(i18n.text("notes-details-show"), "notes-details-show");
+        assert_ne!(i18n.text("search-all-no-hits"), "search-all-no-hits");
     }
 }
