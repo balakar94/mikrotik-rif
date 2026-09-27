@@ -622,12 +622,57 @@ fn index_part(body: &[u8], position: usize, budget: usize) -> Result<IndexedPart
 #[must_use]
 pub fn filter_parts(labels: &[String], needle: &str) -> Vec<usize> {
     let needle = needle.trim().to_lowercase();
-    labels
+    if needle.is_ascii() {
+        let needle_bytes = needle.as_bytes();
+        labels
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| {
+                if needle.is_empty() {
+                    return true;
+                }
+                if label.is_ascii() {
+                    ascii_contains_ci(label.as_bytes(), needle_bytes)
+                } else {
+                    label.to_lowercase().contains(&needle)
+                }
+            })
+            .map(|(index, _)| index)
+            .collect()
+    } else {
+        labels
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| needle.is_empty() || label.to_lowercase().contains(&needle))
+            .map(|(index, _)| index)
+            .collect()
+    }
+}
+
+/// Case-insensitive ASCII substring search without allocating.
+///
+/// Both slices must already be ASCII (the caller checks `str::is_ascii`);
+/// bytes are compared case-insensitively during the scan, so no lowered copy
+/// of the haystack is ever built.
+fn ascii_contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    let first = needle[0].to_ascii_lowercase();
+    haystack
         .iter()
         .enumerate()
-        .filter(|(_, label)| needle.is_empty() || label.to_lowercase().contains(&needle))
-        .map(|(index, _)| index)
-        .collect()
+        .filter(|(_, byte)| byte.to_ascii_lowercase() == first)
+        .any(|(start, _)| {
+            haystack.len() - start >= needle.len()
+                && haystack[start..start + needle.len()]
+                    .iter()
+                    .zip(needle.iter())
+                    .all(|(&left, &right)| left.eq_ignore_ascii_case(&right))
+        })
 }
 
 /// Line starts of `text` plus the longest line length in characters.
@@ -815,6 +860,17 @@ mod tests {
         assert_eq!(filter_parts(&labels, "other"), [1]);
         assert!(filter_parts(&labels, "missing").is_empty());
         assert!(filter_parts(&[], "x").is_empty());
+    }
+
+    #[test]
+    fn filter_parts_matches_unicode_case_insensitively() {
+        // Non-ASCII needles (or labels) fall back to `to_lowercase`, so Ä/ä
+        // must match exactly like the previous allocation-heavy path.
+        let labels = ["Äpfel".to_owned(), "BANANE".to_owned(), "apfel".to_owned()];
+        assert_eq!(filter_parts(&labels, "ä"), [0]);
+        assert_eq!(filter_parts(&labels, "Ä"), [0]);
+        assert_eq!(filter_parts(&labels, "banane"), [1]);
+        assert_eq!(filter_parts(&labels, "apfel"), [2]);
     }
 
     #[test]
@@ -1126,5 +1182,46 @@ mod tests {
             capture.read(0, &tight_part).unwrap_err(),
             RifError::PayloadAboveLimit { limit } if limit == size - 1
         ));
+    }
+
+    #[test]
+    fn cache_evicts_by_bytes_preserving_mru() {
+        let source = wrap(&[
+            encode_part(b"one", b"a"),
+            encode_part(b"two", b"b"),
+            encode_part(b"three", b"c"),
+        ]);
+        let limits = CaptureLimits::default();
+        let capture = Capture::from_bytes(&source, &limits).expect("fixture must index");
+        let cancel = Cancel::new();
+        let per = capture.read(0, &limits).unwrap().text.capacity();
+        assert!(per > 0, "a tiny part must retain bytes");
+        for index in 1..3 {
+            assert_eq!(
+                capture.read(index, &limits).unwrap().text.capacity(),
+                per,
+                "tiny parts must retain equally for a byte budget"
+            );
+        }
+        let mut cache = PartCache::new(8, per * 2);
+        let first = capture
+            .read_cached(0, &limits, &mut cache, &cancel)
+            .unwrap();
+        let _ = capture
+            .read_cached(1, &limits, &mut cache, &cancel)
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.bytes(), per * 2);
+        let hit = cache.get(0).expect("promoted entry must hit");
+        assert!(Arc::ptr_eq(&first, &hit));
+        let third = capture
+            .read_cached(2, &limits, &mut cache, &cancel)
+            .unwrap();
+        assert_eq!(third.text, "c");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.bytes(), per * 2);
+        let survivor = cache.get(0).expect("MRU must survive eviction");
+        assert!(Arc::ptr_eq(&first, &survivor));
+        assert!(cache.get(1).is_none(), "LRU must have been evicted");
     }
 }

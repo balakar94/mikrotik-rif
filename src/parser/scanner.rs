@@ -14,6 +14,16 @@ pub const OPEN_MARKER: &[u8] = b"--BEGIN ROUTEROS SUPOUT SECTION";
 /// Closes a part body.
 pub const CLOSE_MARKER: &[u8] = b"--END ROUTEROS SUPOUT SECTION";
 
+/// Cancellation checkpoint granularity, in scanned input bytes.
+///
+/// The scan checks the token once per input line and additionally every
+/// [`CANCEL_CHECK_BYTES`] of scanned bytes (on top of the per-line check), so
+/// a capture made of a few very long lines still observes cancellation
+/// promptly instead of only at the next line boundary. This mirrors the
+/// worker's chunk-based `CANCEL_CHECK_EVERY` pacing: both trade a cheap
+/// periodic atomic load for bounded cancellation latency.
+const CANCEL_CHECK_BYTES: usize = 1024 * 1024;
+
 /// Maximum structural notes retained per scan.
 ///
 /// A hostile file could otherwise pile up one note per line and exhaust
@@ -124,8 +134,10 @@ pub fn locate_parts(
 /// Walk the container and record every part body, honouring a cancellation
 /// token.
 ///
-/// The token is checked once per input line, so a scan of a very large capture
-/// can be abandoned between lines. Cancellation aborts with
+/// The token is checked once per input line and additionally every
+/// [`CANCEL_CHECK_BYTES`] of scanned bytes, so a scan of a very large capture
+/// can be abandoned between lines — or between megabyte checkpoints inside a
+/// run of very long lines. Cancellation aborts with
 /// [`RifError::Cancelled`] rather than producing a partial span list.
 ///
 /// # Errors
@@ -143,6 +155,10 @@ pub fn locate_parts_cancellable(
     let mut open: Option<usize> = None;
     let mut last_close_line_end: Option<usize> = None;
     let mut notes_seen = 0usize;
+    // Bytes scanned since the start, plus the next ~1 MiB boundary at which
+    // the token is re-checked on top of the per-line check above.
+    let mut scanned_bytes = 0usize;
+    let mut next_byte_check = CANCEL_CHECK_BYTES;
     // `notes` may be reused across calls; only entries appended from here on
     // were produced (and counted) by this scan.
     let notes_at_start = notes.len();
@@ -194,6 +210,18 @@ pub fn locate_parts_cancellable(
             last_close_line_end = Some(line_end);
         }
 
+        let consumed = if line_end >= source.len() {
+            source.len().saturating_sub(cursor)
+        } else {
+            (line_end + 1).saturating_sub(cursor)
+        };
+        scanned_bytes = scanned_bytes.saturating_add(consumed);
+        if scanned_bytes >= next_byte_check {
+            next_byte_check = next_byte_check.saturating_add(CANCEL_CHECK_BYTES);
+            if cancel.is_cancelled() {
+                return Err(RifError::Cancelled);
+            }
+        }
         if line_end >= source.len() {
             break;
         }

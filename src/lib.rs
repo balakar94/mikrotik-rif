@@ -18,6 +18,7 @@ pub mod parser;
 mod app;
 mod build_info;
 mod cli;
+mod filenames;
 mod i18n;
 mod icons;
 mod panic;

@@ -18,7 +18,9 @@ use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::filenames::{escape_label, sanitize};
 use crate::parser::{CODE_NAME, Capture, CaptureLimits};
+use crate::worker::MAX_CAPTURE_BYTES;
 
 /// Successful completion.
 const EXIT_OK: i32 = 0;
@@ -355,10 +357,29 @@ fn write_help<W: Write>(out: &mut W) -> Result<(), CliError> {
 }
 
 /// Read and index a capture, mapping every failure to an operational error.
+///
+/// Files larger than [`MAX_CAPTURE_BYTES`] are rejected up front from the file
+/// metadata so an oversized capture never reaches the in-memory buffer; a file
+/// that grows between the metadata check and the read is rejected again from
+/// the buffered length. The reason mirrors the worker's `TOO_LARGE_REASON`.
 fn load_capture(path: &Path) -> Result<Capture, CliError> {
+    if let Ok(metadata) = std::fs::metadata(path)
+        && metadata.len() > MAX_CAPTURE_BYTES
+    {
+        return Err(CliError::operational(format!(
+            "{} is not a readable capture: file too large (>512 MiB)",
+            path.display()
+        )));
+    }
     let bytes = std::fs::read(path).map_err(|error| {
         CliError::operational(format!("cannot read {}: {error}", path.display()))
     })?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CAPTURE_BYTES {
+        return Err(CliError::operational(format!(
+            "{} is not a readable capture: file too large (>512 MiB)",
+            path.display()
+        )));
+    }
     let capture = Capture::from_bytes(&bytes, &CaptureLimits::default()).map_err(|error| {
         CliError::operational(format!(
             "{} is not a readable capture: {error}",
@@ -375,6 +396,11 @@ fn load_capture(path: &Path) -> Result<Capture, CliError> {
 }
 
 /// Print one tab-separated line per part to `out`.
+///
+/// Labels come from the capture file and are untrusted: control characters
+/// (newlines, ANSI escapes) are neutralised with [`escape_label`] so a
+/// hostile label cannot inject lines or terminal sequences into the listing.
+/// The extracted content itself is never altered here.
 fn list<W: Write>(path: &Path, out: &mut W) -> Result<(), CliError> {
     let capture = load_capture(path)?;
     let mut listing = String::new();
@@ -387,7 +413,7 @@ fn list<W: Write>(path: &Path, out: &mut W) -> Result<(), CliError> {
             listing,
             "{}\t{}\t{}\t{}",
             part.ordinal(),
-            part.label(),
+            escape_label(part.label()),
             part.compressed_len(),
             status
         )
@@ -458,6 +484,10 @@ fn selected_indices(capture: &Capture, selection: &Selection) -> Result<Vec<usiz
 
 /// Expand every selected module to `out`, separating multiple documents with a
 /// header so the output stays unambiguous.
+///
+/// The label in the header is untrusted capture input, so it is passed through
+/// [`escape_label`] to neutralise newlines and ANSI escapes that could forge
+/// headers or drive the terminal. The expanded body is written verbatim.
 fn extract_to_stdout<W: Write>(
     capture: &Capture,
     indices: &[usize],
@@ -475,7 +505,7 @@ fn extract_to_stdout<W: Write>(
             write!(
                 chunk,
                 "\n===== {} [{}] =====\n",
-                part.label(),
+                escape_label(part.label()),
                 part.ordinal()
             )
             .expect("writing into a String never fails");
@@ -491,6 +521,14 @@ fn extract_to_stdout<W: Write>(
 
 /// Expand every selected module into `directory`, one sanitised file per part,
 /// printing the path of each file that was written to `out`.
+///
+/// Hardening: each file is created with `create_new`, so a pre-existing
+/// regular file is never truncated — the writer falls through to the next
+/// `unique_stem` suffix (`<stem>-2.txt`, …). A final path that already exists
+/// as a symlink is refused with an operational error instead of being
+/// followed. Only the final file path is checked: parent components of
+/// `directory` are created with `create_dir_all` and are not inspected for
+/// symlinks, so callers must pass a trustworthy destination.
 fn extract_to_directory<W: Write>(
     capture: &Capture,
     indices: &[usize],
@@ -513,11 +551,42 @@ fn extract_to_directory<W: Write>(
         let text = capture.read(index, limits).map_err(|error| {
             CliError::operational(format!("cannot expand module {:?}: {error}", part.label()))
         })?;
-        let name = format!("{}.txt", unique_stem(part.label(), &mut used));
-        let path = directory.join(name);
-        std::fs::write(&path, text.text.as_bytes()).map_err(|error| {
-            CliError::operational(format!("cannot write {}: {error}", path.display()))
-        })?;
+        let mut stem = unique_stem(part.label(), &mut used);
+        let path = loop {
+            let candidate = directory.join(format!("{stem}.txt"));
+            if let Ok(metadata) = std::fs::symlink_metadata(&candidate)
+                && metadata.file_type().is_symlink()
+            {
+                return Err(CliError::operational(format!(
+                    "refusing to overwrite symlink {}",
+                    candidate.display()
+                )));
+            }
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(mut file) => {
+                    file.write_all(text.text.as_bytes()).map_err(|error| {
+                        CliError::operational(format!(
+                            "cannot write {}: {error}",
+                            candidate.display()
+                        ))
+                    })?;
+                    break candidate;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    stem = unique_stem(part.label(), &mut used);
+                }
+                Err(error) => {
+                    return Err(CliError::operational(format!(
+                        "cannot write {}: {error}",
+                        candidate.display()
+                    )));
+                }
+            }
+        };
         if stream == Stream::Open {
             let line = format!("{}\n", path.display());
             stream = write_bytes(out, line.as_bytes())?;
@@ -562,47 +631,6 @@ fn unique_stem(label: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
-/// Turn a module label into a safe file-name fragment.
-///
-/// This mirrors `crate::app::workspace::sanitize`, which cannot be reused here:
-/// that function is `pub(crate)` inside a module private to `app`, so the sibling
-/// `cli` module cannot name it. The rules are identical: drop control
-/// characters, replace `/ \ : * ? " < > |` with `_`, cap at 64 characters, trim
-/// surrounding dots, spaces, underscores and whitespace, fall back to `module`
-/// when nothing remains, and reject Windows-reserved stems such as `CON`.
-fn sanitize(label: &str) -> String {
-    let cleaned: String = label
-        .chars()
-        .filter(|character| !character.is_control())
-        .map(|character| match character {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            other => other,
-        })
-        .collect();
-    let capped: String = cleaned.chars().take(64).collect();
-    let trimmed = capped
-        .trim()
-        .trim_end_matches(['.', ' '])
-        .trim_matches(|character: char| character == '_' || character.is_whitespace());
-    if trimmed.is_empty() {
-        return "module".to_owned();
-    }
-    let stem = trimmed.split('.').next().unwrap_or(trimmed);
-    if is_windows_reserved(stem) {
-        return "module".to_owned();
-    }
-    trimmed.to_owned()
-}
-
-/// Whether a file-name stem is reserved on Windows (`CON`, `PRN`, …).
-fn is_windows_reserved(stem: &str) -> bool {
-    const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
-    RESERVED.contains(&stem.to_ascii_uppercase().as_str())
-}
-
 /// Write to an output stream, treating a closed reader as a clean stop.
 fn write_bytes<W: Write>(out: &mut W, bytes: &[u8]) -> Result<Stream, CliError> {
     match out.write_all(bytes) {
@@ -628,6 +656,8 @@ fn flush_output<W: Write>(out: &mut W) -> Result<Stream, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
@@ -849,15 +879,37 @@ mod tests {
         assert_eq!(unique_stem("\\x", &mut used), "x-2");
     }
 
+    #[test]
+    fn default_parts_directory_rejects_stemless_path() {
+        assert!(default_parts_directory(Path::new("..")).is_err());
+        assert!(default_parts_directory(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn unique_stem_handles_sanitised_collisions() {
+        let mut used = HashSet::new();
+        let stems: Vec<String> = ["a/b", "a\\b", "a:b", "a*b"]
+            .iter()
+            .map(|label| unique_stem(label, &mut used))
+            .collect();
+        assert_eq!(stems, ["a_b", "a_b-2", "a_b-3", "a_b-4"]);
+    }
+
     // ── End-to-end IO ────────────────────────────────────────────────────────
 
     /// A unique, self-cleaning directory under the system temp root.
     struct TempDir(PathBuf);
 
+    /// Monotonic counter keeping temp names unique across parallel tests.
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     impl TempDir {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("mikrotik-rif-cli-{}-{name}", std::process::id()));
+            let sequence = SEQUENCE.fetch_add(1, Ordering::SeqCst);
+            let path = std::env::temp_dir().join(format!(
+                "mikrotik-rif-cli-{}-{sequence}-{name}",
+                std::process::id()
+            ));
             let _previous = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("create temp directory");
             Self(path)
@@ -1055,5 +1107,91 @@ mod tests {
         };
         let mut output = Vec::new();
         assert!(extract(&request, &mut output).is_err());
+    }
+
+    #[test]
+    fn extract_never_truncates_a_preexisting_regular_file() {
+        let (dir, path) = capture_file("no-truncate", &[encode_part(b"log", b"new\n")]);
+        let out_dir = dir.path().join("out");
+        std::fs::create_dir_all(&out_dir).expect("out dir");
+        std::fs::write(out_dir.join("log.txt"), b"old\n").expect("sentinel");
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::Module("log".to_owned()),
+            destination: Destination::Directory(out_dir.clone()),
+        };
+        let mut report = Vec::new();
+        extract(&request, &mut report).expect("extract must succeed");
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("log.txt")).unwrap(),
+            "old\n",
+            "pre-existing file must be preserved"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("log-2.txt")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_refuses_to_follow_a_preplanted_symlink() {
+        let (dir, path) = capture_file("no-symlink", &[encode_part(b"log", b"new\n")]);
+        let out_dir = dir.path().join("out");
+        std::fs::create_dir_all(&out_dir).expect("out dir");
+        let victim = dir.path().join("victim.txt");
+        std::fs::write(&victim, b"victim\n").expect("victim");
+        std::os::unix::fs::symlink(&victim, out_dir.join("log.txt")).expect("symlink");
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::Module("log".to_owned()),
+            destination: Destination::Directory(out_dir),
+        };
+        let mut report = Vec::new();
+        let error = extract(&request, &mut report).expect_err("symlink must be refused");
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "victim\n");
+    }
+
+    #[test]
+    fn hostile_labels_are_neutralised_on_stdout_paths() {
+        let hostile = "alpha\n===== beta\x1b[2J";
+        let (_dir, path) = capture_file(
+            "hostile-label",
+            &[
+                encode_part(hostile.as_bytes(), b"evil\n"),
+                encode_part(b"other", b"plain\n"),
+            ],
+        );
+        let escaped = escape_label(hostile);
+        assert!(!escaped.contains('\n'));
+        assert!(!escaped.contains('\x1b'));
+
+        let mut listing = Vec::new();
+        list(&path, &mut listing).expect("listing must succeed");
+        let listing = String::from_utf8(listing).expect("utf-8");
+        assert_eq!(listing.lines().count(), 2, "{listing:?}");
+        assert!(listing.contains(&escaped), "{listing:?}");
+        assert!(!listing.contains('\x1b'), "{listing:?}");
+
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Stdout,
+        };
+        let mut output = Vec::new();
+        extract(&request, &mut output).expect("stdout extract");
+        let text = String::from_utf8(output).expect("utf-8");
+        assert!(text.contains(&escaped), "{text:?}");
+        assert!(!text.contains('\x1b'), "{text:?}");
+        // The escaped label keeps its inline `=====` run, but it sits
+        // mid-line: only the two genuine headers start a line, so the
+        // injected run cannot forge a header of its own.
+        let header_lines = text
+            .lines()
+            .filter(|line| line.starts_with("====="))
+            .count();
+        assert_eq!(header_lines, 2, "{text:?}");
+        assert!(text.contains("evil\n"), "body stays verbatim");
     }
 }
