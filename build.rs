@@ -68,8 +68,11 @@ fn main() {
 fn emit_build_identity() {
     println!("cargo:rerun-if-env-changed=MIKROTIK_RIF_COMMIT");
     // The commit changes when `HEAD` moves; without this the value is only
-    // refreshed when some other watched file changes.
+    // refreshed when some other watched file changes. `HEAD` is a symref on
+    // branches, so branch advances only rewrite `refs/heads/*`: watch that
+    // directory too, otherwise local builds keep a stale embedded commit.
     println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
 
     let commit = std::env::var("MIKROTIK_RIF_COMMIT")
         .ok()

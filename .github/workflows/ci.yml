@@ -84,6 +84,19 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets
 
+      # PR-safe corpus guard (stable only, no nightly, no display: the
+      # example only drives the parser over committed seeds, never a window).
+      - name: Verify fuzz corpus
+        if: runner.os == 'Linux'
+        run: cargo run --locked --manifest-path fuzz/Cargo.toml --example verify_corpus
+
+      # The committed seeds must be exactly what gen_corpus.py produces.
+      - name: Fuzz corpus is up to date
+        if: runner.os == 'Linux'
+        run: |
+          python3 fuzz/gen_corpus.py
+          git diff --exit-code -- fuzz/corpus/
+
   msrv:
     name: msrv (1.95)
     runs-on: ubuntu-24.04
@@ -146,6 +159,12 @@ jobs:
       - name: List package files
         run: cargo package --list --locked
 
+      # Guard: .deb/.AppImage/.rpm must ship the same licence/MIME set.
+      # Read-only tomllib assertion over Cargo.toml; no packaging build.
+      - name: Packaging file maps are in sync
+        run: |
+          python3 -c "import tomllib; m=tomllib.load(open('Cargo.toml','rb'))['package']['metadata']; d=m['packager']['deb']['files']; a=m['packager']['appimage']['files']; r={x['dest'] for x in m['generate-rpm']['assets'] if x['dest'].startswith('/usr/share/licenses/') or x['dest'].startswith('/usr/share/mime/')}; assert set(d)==set(a), set(d)^set(a); assert set(d.values())==set(a.values())==r, (set(d.values())^r); print(f'packaging maps in sync: {len(d)} entries')"
+
   deny:
     name: cargo-deny (advisories + licenses)
     runs-on: ubuntu-24.04
@@ -187,6 +206,12 @@ jobs:
           cargo fetch --locked
           cargo about generate about.hbs --output-file THIRD-PARTY-NOTICES.md --fail --frozen
           git diff --exit-code -- THIRD-PARTY-NOTICES.md
+
+      # Guard: deny.toml `[licenses] allow` must equal about.toml `accepted`.
+      # Read-only tomllib set-diff; fails closed on any drift either way.
+      - name: License allow-lists are in sync
+        run: |
+          python3 -c "import tomllib; d=set(tomllib.load(open('deny.toml','rb'))['licenses']['allow']); a=set(tomllib.load(open('about.toml','rb'))['accepted']); assert d==a, (d-a, a-d); print(f'license allow-lists in sync: {len(d)} identifiers')"
 
   zizmor:
     name: zizmor (workflow audit)
