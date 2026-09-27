@@ -42,6 +42,8 @@ use crate::worker::MAX_CAPTURE_BYTES;
 const SCAN_MIN_SECONDS: f64 = 2.4;
 /// Extra seconds the animation holds after indexing, so it never cuts abruptly.
 const SCAN_HOLD_SECONDS: f64 = 1.1;
+/// Seconds the stage-fade overlay takes to disappear.
+const FADE_SECONDS: f32 = 0.35;
 
 /// Which screen the shell is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +172,9 @@ pub(crate) enum InputError {
 
 /// Validate a capture path before queuing it for indexing.
 ///
+/// Best-effort UX pre-check only; real enforcement is the worker
+/// streaming cap [`MAX_CAPTURE_BYTES`].
+///
 /// Returns `Ok` when the file can be opened, `Err(InputError)` otherwise.
 /// A non-`.rif` extension is only a warning at the dialog level, so it
 /// still validates here.
@@ -193,15 +198,21 @@ pub(crate) fn validate_input_path(path: &Path) -> Result<(), InputError> {
 /// Accepts the value when it is non-empty, at most 2048 bytes and only
 /// printable ASCII (`0x20..=0x7E`, which already excludes `\r` and `\n`);
 /// anything else is discarded as `None` so a corrupt storage entry never
-/// reaches the network layer.
+/// reaches the network layer. Surrounding whitespace is trimmed to match
+/// `crate::update::sanitize_etag`; the 2048-byte cap and the charset are
+/// unchanged, and the network-side parser is untouched.
 pub(crate) fn sanitize_etag_value(value: &str) -> Option<String> {
-    if value.is_empty() || value.len() > 2048 {
+    if value.len() > 2048 {
         return None;
     }
     if !value.bytes().all(|byte| (0x20..=0x7E).contains(&byte)) {
         return None;
     }
-    Some(value.to_owned())
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_owned())
 }
 
 /// Application state.
@@ -1029,11 +1040,10 @@ impl Viewer {
             return;
         };
         let elapsed = (self.last_time - start) as f32;
-        let duration = 0.35;
-        if elapsed >= duration {
+        if elapsed >= FADE_SECONDS {
             return;
         }
-        let alpha = ((1.0 - elapsed / duration) * 255.0).clamp(0.0, 255.0) as u8;
+        let alpha = ((1.0 - elapsed / FADE_SECONDS) * 255.0).clamp(0.0, 255.0) as u8;
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
             egui::Id::new("stage-fade"),
@@ -1188,7 +1198,11 @@ impl eframe::App for Viewer {
         self.show_stage(ui, &palette, file_hovered);
 
         self.overlays(ui.ctx(), &palette);
-        if self.busy.is_some()
+        let fade_active = self
+            .fade_at
+            .is_some_and(|start| self.last_time - start < f64::from(FADE_SECONDS));
+        if fade_active
+            || self.busy.is_some()
             || self.stage == Stage::Scanning
             || self.search.as_ref().is_some_and(GlobalSearch::is_scanning)
             || !matches!(self.check, CheckState::Idle)

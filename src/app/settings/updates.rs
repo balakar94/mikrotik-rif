@@ -142,7 +142,7 @@ impl Viewer {
 
         if let Some((done, total)) = self.update_download {
             download_progress(ui, palette, done, total, &downloading_label);
-        } else if let Some((path, _digest)) = self.update_ready.clone() {
+        } else if let Some((path, _digest)) = &self.update_ready {
             let name = path.file_name().map_or_else(
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
@@ -170,8 +170,8 @@ impl Viewer {
             {
                 action = Some(UpdateAction::Launch);
             }
-        } else if let Some(reason) = self.update_error.clone() {
-            ui.label(RichText::new(reason).color(palette.danger));
+        } else if let Some(reason) = &self.update_error {
+            ui.label(RichText::new(reason.as_str()).color(palette.danger));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button(retry_label.as_str()).clicked() {
@@ -181,9 +181,9 @@ impl Viewer {
                     action = Some(UpdateAction::OpenPage);
                 }
             });
-        } else if let Some(release) = self.update_release.clone() {
+        } else if let Some(release) = &self.update_release {
             let mut release_args = FluentArgs::new();
-            release_args.set("version", release.tag.clone());
+            release_args.set("version", release.tag.as_str());
             let headline = self.i18n.render("update-available", &release_args);
             ui.label(RichText::new(headline).strong().color(palette.text));
             ui.add_space(6.0);

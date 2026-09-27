@@ -104,8 +104,10 @@ pub fn icon_button_ext(
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    // egui 0.36 exposes no `accessible_label` on `Response`, so the tooltip
-    // stays as the accessible name source.
+    // Custom-painted button: expose a button role with the hint as its
+    // accessible name (same pattern as the splash drop zone).
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hint.to_owned()));
     response.on_hover_text(hint).clicked() && enabled
 }
 

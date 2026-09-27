@@ -856,6 +856,15 @@ fn file_chip(
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    // Custom-painted chip: expose a button role with the same text as the
+    // tooltip (same pattern as the splash drop zone).
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("{hint}\n{}", path.display()),
+        )
+    });
     response.on_hover_text(format!("{hint}\n{}", path.display()))
 }
 
@@ -1046,39 +1055,9 @@ fn ellipsize_title(title: &str) -> String {
     }
 }
 
-/// Whether a file-name stem is reserved on Windows (`CON`, `PRN`, …).
-fn is_windows_reserved(stem: &str) -> bool {
-    const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
-    RESERVED.contains(&stem.to_ascii_uppercase().as_str())
-}
-
-/// Turn a module label into a safe file name fragment.
-pub(crate) fn sanitize(label: &str) -> String {
-    let cleaned: String = label
-        .chars()
-        .filter(|character| !character.is_control())
-        .map(|character| match character {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            other => other,
-        })
-        .collect();
-    let capped: String = cleaned.chars().take(64).collect();
-    let trimmed = capped
-        .trim()
-        .trim_end_matches(['.', ' '])
-        .trim_matches(|character: char| character == '_' || character.is_whitespace());
-    if trimmed.is_empty() {
-        return "module".to_owned();
-    }
-    let stem = trimmed.split('.').next().unwrap_or(trimmed);
-    if is_windows_reserved(stem) {
-        return "module".to_owned();
-    }
-    trimmed.to_owned()
-}
+/// Shared file-name sanitiser; the rules live in [`crate::filenames`] so the
+/// desktop save flow and the headless `--extract` flow stay byte-identical.
+pub(crate) use crate::filenames::sanitize;
 
 /// Convert a collection length into the unsigned type used by messages.
 pub(crate) fn units(value: usize) -> u64 {
