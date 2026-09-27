@@ -51,7 +51,7 @@ Used by:
 - `polycool 0.4.0` — https://github.com/linebender/kurbo
 - `raw-window-metal 1.1.0` — https://github.com/rust-windowing/raw-window-metal
 - `static_assertions 1.1.0` — https://github.com/nvzqz/static-assertions-rs
-- `ureq-proto 0.6.2` — https://github.com/algesten/ureq-proto
+- `ureq-proto 0.6.4` — https://github.com/algesten/ureq-proto
 - `utf8_iter 1.0.4` — https://github.com/hsivonen/utf8_iter
 - `x11rb-protocol 0.13.2` — https://github.com/psychon/x11rb
 - `x11rb 0.13.2` — https://github.com/psychon/x11rb
@@ -109,7 +109,7 @@ Used by:
 - `self_cell 1.3.0` — https://github.com/Voultapher/self_cell
 - `sys-locale 0.3.2` — https://github.com/1Password/sys-locale
 - `unarray 0.1.4` — https://github.com/cameron1024/unarray
-- `ureq 3.4.1` — https://github.com/algesten/ureq
+- `ureq 3.4.2` — https://github.com/algesten/ureq
 - `fluent-bundle 0.16.0` — https://github.com/projectfluent/fluent-rs
 - `fluent-syntax 0.12.0` — https://github.com/projectfluent/fluent-rs
 - `intl-memoizer 0.5.3` — https://github.com/projectfluent/fluent-rs
@@ -388,9 +388,9 @@ Used by:
 - `syn 2.0.119` — https://github.com/dtolnay/syn
 - `syn 3.0.5` — https://github.com/dtolnay/syn
 - `thiserror-impl 1.0.69` — https://github.com/dtolnay/thiserror
-- `thiserror-impl 2.0.20` — https://github.com/dtolnay/thiserror
+- `thiserror-impl 2.0.21` — https://github.com/dtolnay/thiserror
 - `thiserror 1.0.69` — https://github.com/dtolnay/thiserror
-- `thiserror 2.0.20` — https://github.com/dtolnay/thiserror
+- `thiserror 2.0.21` — https://github.com/dtolnay/thiserror
 - `type-map 0.5.1` — https://github.com/kardeiz/type-map
 - `typeid 1.0.3` — https://github.com/dtolnay/typeid
 - `unicode-ident 1.0.24` — https://github.com/dtolnay/unicode-ident
