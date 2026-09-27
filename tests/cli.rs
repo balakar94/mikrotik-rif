@@ -424,12 +424,9 @@ fn bare_path_never_takes_the_cli_path() {
     // indistinguishable from taking the CLI path, so skip explicitly there.
     #[cfg(target_os = "linux")]
     {
-        let has_x11 = std::env::var("DISPLAY")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
-        let has_wayland = std::env::var("WAYLAND_DISPLAY")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
+        let has_x11 = std::env::var("DISPLAY").is_ok_and(|value| !value.trim().is_empty());
+        let has_wayland =
+            std::env::var("WAYLAND_DISPLAY").is_ok_and(|value| !value.trim().is_empty());
         if !has_x11 && !has_wayland {
             eprintln!(
                 "skipping bare_path_never_takes_the_cli_path: no display \
