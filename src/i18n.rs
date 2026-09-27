@@ -293,6 +293,15 @@ mod tests {
             for id in &base {
                 assert!(translated.contains(id), "{tag} is missing {id}");
             }
+            for line in source.lines() {
+                if identifier(line).is_some() {
+                    let (_, value) = line.split_once('=').expect("identifier implies '='");
+                    assert!(
+                        !value.trim().is_empty(),
+                        "{tag} has an empty value for {line:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -354,6 +363,15 @@ mod tests {
         assert_eq!(endonym("es"), "Español");
         assert_eq!(endonym("ru"), "Русский");
         assert_eq!(endonym("xx"), "xx", "unknown tags pass through");
+    }
+
+    #[test]
+    fn endonym_covers_every_shipped_locale() {
+        for (tag, _) in SHIPPED {
+            let name = endonym(tag);
+            assert!(!name.is_empty(), "endonym for {tag} must not be empty");
+            assert_ne!(name.as_str(), *tag, "endonym for {tag} must differ");
+        }
     }
 
     /// The embedded source of one shipped locale.

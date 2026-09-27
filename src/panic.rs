@@ -170,6 +170,15 @@ fn append_log_to(path: &Path, message: &str, location: &str) -> std::io::Result<
                 format!("{secs}s since epoch")
             },
         );
+    // Never follow a symlink at the log path: a pre-created link in the
+    // shared temporary directory could otherwise redirect panic output
+    // into an unrelated file. Rename the link aside (best effort, like
+    // every other I/O here) so the entry below lands on a fresh file.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        let mut backup = path.as_os_str().to_owned();
+        backup.push(".symlink-bak");
+        let _ = std::fs::rename(path, PathBuf::from(backup));
+    }
     // Truncation is done by reopening the file rather than with
     // `File::set_len`: on Windows the append-only handle does not carry the
     // access right that resizing requires, so `set_len` fails there.
@@ -248,6 +257,39 @@ mod tests {
             body.len() < 1024,
             "log was truncated to a single entry: {} bytes",
             body.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_never_writes_through_a_symlink() {
+        let dir =
+            std::env::temp_dir().join(format!("mikrotik-rif-panic-symlink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let target = dir.join("target.txt");
+        let log = dir.join("panic.log");
+        let _ = std::fs::remove_file(&log);
+        let mut backup = log.as_os_str().to_owned();
+        backup.push(".symlink-bak");
+        let _ = std::fs::remove_file(PathBuf::from(&backup));
+        std::fs::write(&target, "original").expect("target file");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &log).expect("link log");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &log).expect("link log");
+
+        append_log_to(&log, "symlink-probe", "s.rs:1").expect("append");
+
+        let victim = std::fs::read_to_string(&target).expect("read");
+        assert!(!victim.contains("symlink-probe"), "link target kept");
+        assert!(
+            !std::fs::symlink_metadata(&log)
+                .expect("log metadata")
+                .file_type()
+                .is_symlink(),
+            "log path is a fresh file"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

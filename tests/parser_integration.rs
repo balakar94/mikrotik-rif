@@ -425,3 +425,25 @@ fn reads_real_capture_corpus() {
     }
     eprintln!("verified {checked} capture(s) from {}", dir.display());
 }
+
+#[test]
+fn cached_index_no_reutiliza_entre_capturas() {
+    let limits = CaptureLimits::default();
+    let cancel = Cancel::new();
+    let first_source = build_capture(&[(b"mod", b"first body\n")]);
+    let second_source = build_capture(&[(b"mod", b"second body\n")]);
+    let first = Capture::from_bytes(&first_source, &limits).expect("first must index");
+    let second = Capture::from_bytes(&second_source, &limits).expect("second must index");
+    let mut cache = PartCache::default();
+    let cached_first = first
+        .read_cached(0, &limits, &mut cache, &cancel)
+        .expect("first must expand");
+    assert_eq!(cached_first.text, "first body\n");
+    // `PartCache` is keyed by part index alone, so the same object must not
+    // carry entries across captures: clear before reusing it.
+    cache.clear();
+    let cached_second = second
+        .read_cached(0, &limits, &mut cache, &cancel)
+        .expect("second must expand");
+    assert_eq!(cached_second.text, "second body\n");
+}
