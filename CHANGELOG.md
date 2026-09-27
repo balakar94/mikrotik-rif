@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-09-27
+
+### Fixed
+
+- DMG Finder labels legible: white pills behind the app and Applications
+  name zones, arrow repositioned between the icons (`assets/macos/`).
+- Dependency bumps: `thiserror` 2.0.20->2.0.21, `ureq` 3.4.1->3.4.2
+  (`ureq-proto` 0.6.2->0.6.4); notices regenerated.
+- Release workflow: `actions/attest-build-provenance` 3.0.0->4.2.2
+  (drop-in, `subject-path` unchanged).
+
 ## [0.8.0] - 2026-09-27
 
 ### Added
