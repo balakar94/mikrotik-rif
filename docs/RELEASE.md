@@ -239,19 +239,29 @@ Finder double-click then opens the capture in the viewer. No context-menu or
 
 The `.dmg` Finder window is 660x400pt with product identity:
 `assets/macos/dmg-background.png` (1320x800px, i.e. @2x of the 660x400pt
-window, mastered from vectorial `assets/macos/dmg-background.svg`: dark
-gradient echoing `assets/icon/icon.svg`, two drop-zone rings, sky arrow
-between the rings above the label pills, and two near-white label pills
-behind the Finder icon labels — Finder draws the labels in black, so the
-pills keep them legible on the dark background).
+window, mastered from vectorial `assets/macos/dmg-background.svg`): a plain
+light vertical gradient (`#E3EDF9` → `#F7FAFD`, the LIGHT palette `bg_top` /
+`bg_bottom`) with faint distributed arcs (`#6CA4C8`) and deliberately no
+positioned art — no drop-zone rings, no arrow, no label pills. Two field
+failures forced this: Finder windows can be resized (the 1x dark design
+stretched and its rings/pills drifted off the icon slots), and Finder icon
+labels render black in Light Mode (black-on-dark was illegible). A uniform
+light field stays legible under any crop or resize.
 Finder scales the PNG down to the smaller content rect inside the 660x400pt
 outer frame (the titlebar is not covered by the background), so shipping the
-@2x bitmap keeps it sharp on Retina while the 1x layout coords (icon slots,
-ring centres) stay the same. The background carries no text, so it is
+@2x bitmap keeps it sharp on Retina. The background carries no text, so it is
 localization-free, and carries no baked-in icons —
-Finder draws the `.app` icon and the `/Applications` symlink on top of the
-rings, and the rings-plus-arrow artwork already shows the drop target, so the
-user-facing README lists only `.dmg` with no "drag ..." instruction. It is
+Finder draws the `.app` icon and the `/Applications` symlink on top, so the
+user-facing README lists only `.dmg` with no "drag ..." instruction. The
+light background is deliberate and crop-resistant: Finder draws icon labels
+in black in Light Mode, so any dark background is illegible there, and
+Finder scales/crops the background when the user resizes the window —
+pixel-positioned label pills are lost by that crop (observed in the field on
+v0.8.1: only the lower arcs survived, labels unreadable). A uniform light
+gradient stays legible under any crop (black-on-light in Light Mode,
+white-with-shadow on light in Dark Mode — the industry standard), and the
+faint arcs are distributed so no crop removes them all; nothing is
+load-bearing at the pixel level. It is
 wired through the
 `[package.metadata.packager.dmg]` table in `Cargo.toml` (`background`,
 `window-size`, `app-position`, `application-folder-position` — the exact key
@@ -521,8 +531,9 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   eyeballable on a mounted image from a macOS CI run: check that the window
   is 660x400, the background fills it without scaling artifacts, and the
   `.app` icon plus the `/Applications` symlink sit centred on the two rings
-  with the arrow between them above the label pills and each black label
-  on its pill. The `CI=false` override is the only way to get
+  with the arrow between them and each icon label legible on the light
+  gradient in both Light and Dark Mode. The `CI=false` override is the
+  only way to get
   the background on a CI-built `.dmg`, and it re-enables create-dmg's Finder
   AppleScript: GitHub-hosted macOS runners normally do have an Aqua session,
   but if Finder never writes `.DS_Store` the packaging step hangs until its

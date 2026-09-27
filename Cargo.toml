@@ -219,7 +219,13 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 #     when unset (`src/package/dmg/mod.rs`). Values below pin the defaults for
 #     the icon slots and match the 660x400pt window to the 1320x800px @2x
 #     background (`assets/macos/dmg-background.png`, mastered from
-#     `assets/macos/dmg-background.svg`).
+#     `assets/macos/dmg-background.svg`): plain LIGHT gradient (#E3EDF9 ->
+#     #F7FAFD) with faint distributed arcs and no positioned art, so Finder
+#     resizes/crops and black Light-Mode labels stay legible anywhere.
+#     Light on purpose: Finder draws icon labels in black in Light Mode, so a
+#     dark background is unreadable there, and Finder scales/crops the
+#     background when the window is resized — a uniform light gradient stays
+#     legible under any crop, with no pixel-positioned pills to lose.
 #   * `application-folder-position` is the verified kebab alias of
 #     `appFolderPosition`. WARNING: `app-folder-position` and `window-position`
 #     / `window_size`-style variants of `window_position` do NOT exist in

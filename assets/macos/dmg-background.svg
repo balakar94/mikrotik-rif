@@ -1,30 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="660" height="400" viewBox="0 0 660 400">
-  <title>MikroTik RIF Viewer — DMG background master (660x400pt, render @2x to 1320x800px)</title>
-  <desc>Dark gradient #0D1727 to #080B10, two drop-zone rings #216080 at icon slots (180,170)/(480,170), solid sky arrow #3BBDF8 between the rings above the label pills, two near-white label pills (white 88% opacity, rx 12) at y 208-260 behind the Finder icon labels so the black labels stay legible, three subtle lower arcs. No text. Icon slots are Finder content-rect coords; window-size 660x400pt is the outer frame (titlebar excluded from background).</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 400" width="1320" height="800">
+  <desc>MikroTik RIF Viewer DMG background master. Crop-proof by design: a
+  full-bleed light vertical gradient with faint distributed arcs only. No
+  positioned art (no drop-zone rings, no arrow, no label pills, no text, no
+  baked-in icons) because Finder windows can be resized and icon slots move
+  independently of the picture. Export at 1320x800 (@2x of the 660x400pt
+  window).</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#0D1727"/>
-      <stop offset="1" stop-color="#080B10"/>
+      <stop offset="0" stop-color="#E3EDF9"/>
+      <stop offset="1" stop-color="#F7FAFD"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="660" height="400" fill="url(#bg)"/>
-  <!-- lower concentric arcs, subtle, centred below the window so only crowns show -->
-  <g fill="none" stroke="#1B3348" stroke-width="1.2" opacity="0.85">
-    <circle cx="330" cy="470" r="150"/>
-    <circle cx="330" cy="470" r="180"/>
-    <circle cx="330" cy="470" r="210"/>
-  </g>
-  <!-- drop-zone rings centred on the Finder icon slots -->
-  <g fill="none" stroke="#216080" stroke-width="1.5">
-    <circle cx="180" cy="170" r="55"/>
-    <circle cx="480" cy="170" r="55"/>
-  </g>
-  <!-- label pills: near-white backing so Finder's black icon labels stay legible -->
-  <rect x="80" y="208" width="200" height="52" rx="12" fill="#FFFFFF" fill-opacity="0.88"/>
-  <rect x="400" y="208" width="160" height="52" rx="12" fill="#FFFFFF" fill-opacity="0.88"/>
-  <!-- solid sky arrow between the rings, above the label pills, clear of icons and pills -->
-  <g fill="#3BBDF8" stroke="none">
-    <rect x="285" y="186.5" width="80" height="7" rx="3.5"/>
-    <polygon points="365,176 395,190 365,204"/>
+  <rect width="660" height="400" fill="url(#bg)"/>
+  <g fill="none" stroke="#6CA4C8" stroke-opacity="0.4" stroke-width="1.5">
+    <circle cx="-30" cy="20" r="140"/>
+    <circle cx="-30" cy="20" r="180"/>
+    <circle cx="690" cy="30" r="125"/>
+    <circle cx="690" cy="30" r="165"/>
+    <circle cx="330" cy="625" r="225"/>
+    <circle cx="330" cy="625" r="260"/>
+    <circle cx="330" cy="625" r="295"/>
+    <circle cx="-80" cy="480" r="160"/>
+    <circle cx="740" cy="480" r="160"/>
   </g>
 </svg>
