@@ -721,7 +721,6 @@ impl Viewer {
         // Widest line across the whole module, so the horizontal scrollbar does
         // not flicker as different rows enter and leave the viewport.
         let char_width = ui.ctx().fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
-        let gutter_chars = if gutter { 8 } else { 0 };
 
         let (text, line_starts, max_line_chars) = match &self.body {
             Some(body) => (
@@ -731,8 +730,12 @@ impl Viewer {
             ),
             None => return,
         };
-        let content_width = (gutter_chars + max_line_chars) as f32 * char_width;
         let lines = line_starts.len();
+        // Gutter width follows the line count: digits plus two spaces, so a
+        // 50-line module uses `{:>2}  ` instead of the old fixed `{:>6}  `.
+        let digits = lines.to_string().len().max(1);
+        let gutter_chars = if gutter { digits + 2 } else { 0 };
+        let content_width = (gutter_chars + max_line_chars) as f32 * char_width;
 
         let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
         if let Some(row) = jump {
@@ -750,7 +753,7 @@ impl Viewer {
                 let mut job = egui::text::LayoutJob::default();
                 if gutter {
                     job.append(
-                        &format!("{:>6}  ", row + 1),
+                        &format!("{:>digits$}  ", row + 1),
                         0.0,
                         egui::TextFormat::simple(font.clone(), gutter_color),
                     );

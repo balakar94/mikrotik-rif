@@ -584,6 +584,15 @@ impl Viewer {
             let hit = self.search.as_ref().is_some_and(|search| {
                 find_case_insensitive(&text.text, &search.needle, 0).is_some()
             });
+            // Cache the expanded text so opening a hit is an `Arc` clone
+            // instead of a second expansion behind a spinner.
+            let (line_starts, max_line_chars) = compute_view(&text.text);
+            let view = Arc::new(BodyView {
+                text: Arc::clone(&text),
+                line_starts,
+                max_line_chars,
+            });
+            self.remember_view(index, &view);
             if let Some(search) = self.search.as_mut() {
                 search.in_flight = None;
                 search.scanned += 1;
@@ -724,12 +733,22 @@ impl Viewer {
             if search.in_flight.is_some() {
                 return;
             }
-            if let Some(index) = search.pending.pop_front() {
+            loop {
+                let Some(index) = search.pending.pop_front() else {
+                    search.done = true;
+                    break None;
+                };
+                // A pending module already in the view cache needs no worker
+                // expansion: count it as scanned and test the cached text.
+                if let Some(view) = self.views.get(&index) {
+                    search.scanned += 1;
+                    if find_case_insensitive(&view.text.text, &search.needle, 0).is_some() {
+                        search.hits.insert(index);
+                    }
+                    continue;
+                }
                 search.in_flight = Some(index);
-                Some(index)
-            } else {
-                search.done = true;
-                None
+                break Some(index);
             }
         };
         let Some(index) = next else {
@@ -984,7 +1003,16 @@ impl Viewer {
             self.find_state = FindState::Closed;
         }
         if slash {
-            self.focus_filter(ui);
+            // Never steal `/` typed inside a text field (module filter,
+            // global search, find bar). `egui_wants_keyboard_input` covers
+            // any focused widget; `text_edit_focused` narrows to `TextEdit`
+            // and the memory check mirrors `focus_filter`.
+            let typing = ui.ctx().egui_wants_keyboard_input()
+                || ui.ctx().text_edit_focused()
+                || ui.memory(|memory| memory.focused().is_some());
+            if !typing {
+                self.focus_filter(ui);
+            }
         }
         if next_requested && self.find_state.is_open() {
             self.step_match(1);
