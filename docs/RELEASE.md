@@ -240,7 +240,10 @@ Finder double-click then opens the capture in the viewer. No context-menu or
 The `.dmg` Finder window is 660x400pt with product identity:
 `assets/macos/dmg-background.png` (1320x800px, i.e. @2x of the 660x400pt
 window, mastered from vectorial `assets/macos/dmg-background.svg`: dark
-gradient echoing `assets/icon/icon.svg`, two drop-zone rings, sky arrow).
+gradient echoing `assets/icon/icon.svg`, two drop-zone rings, sky arrow
+between the rings above the label pills, and two near-white label pills
+behind the Finder icon labels — Finder draws the labels in black, so the
+pills keep them legible on the dark background).
 Finder scales the PNG down to the smaller content rect inside the 660x400pt
 outer frame (the titlebar is not covered by the background), so shipping the
 @2x bitmap keeps it sharp on Retina while the 1x layout coords (icon slots,
@@ -518,7 +521,8 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   eyeballable on a mounted image from a macOS CI run: check that the window
   is 660x400, the background fills it without scaling artifacts, and the
   `.app` icon plus the `/Applications` symlink sit centred on the two rings
-  with the arrow between them. The `CI=false` override is the only way to get
+  with the arrow between them above the label pills and each black label
+  on its pill. The `CI=false` override is the only way to get
   the background on a CI-built `.dmg`, and it re-enables create-dmg's Finder
   AppleScript: GitHub-hosted macOS runners normally do have an Aqua session,
   but if Finder never writes `.DS_Store` the packaging step hangs until its

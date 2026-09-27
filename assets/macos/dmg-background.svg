@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="660" height="400" viewBox="0 0 660 400">
   <title>MikroTik RIF Viewer — DMG background master (660x400pt, render @2x to 1320x800px)</title>
-  <desc>Dark gradient #0D1727 to #080B10, two drop-zone rings #216080 at icon slots (180,170)/(480,170), solid sky arrow #3BBDF8 between them, three subtle lower arcs. No text. Icon slots are Finder content-rect coords; window-size 660x400pt is the outer frame (titlebar excluded from background).</desc>
+  <desc>Dark gradient #0D1727 to #080B10, two drop-zone rings #216080 at icon slots (180,170)/(480,170), solid sky arrow #3BBDF8 between the rings above the label pills, two near-white label pills (white 88% opacity, rx 12) at y 208-260 behind the Finder icon labels so the black labels stay legible, three subtle lower arcs. No text. Icon slots are Finder content-rect coords; window-size 660x400pt is the outer frame (titlebar excluded from background).</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0D1727"/>
@@ -19,9 +19,12 @@
     <circle cx="180" cy="170" r="55"/>
     <circle cx="480" cy="170" r="55"/>
   </g>
-  <!-- solid sky arrow pointing from app ring to /Applications ring -->
+  <!-- label pills: near-white backing so Finder's black icon labels stay legible -->
+  <rect x="80" y="208" width="200" height="52" rx="12" fill="#FFFFFF" fill-opacity="0.88"/>
+  <rect x="400" y="208" width="160" height="52" rx="12" fill="#FFFFFF" fill-opacity="0.88"/>
+  <!-- solid sky arrow between the rings, above the label pills, clear of icons and pills -->
   <g fill="#3BBDF8" stroke="none">
-    <rect x="270" y="166.5" width="105" height="7" rx="3.5"/>
-    <polygon points="375,152 405,170 375,188"/>
+    <rect x="285" y="186.5" width="80" height="7" rx="3.5"/>
+    <polygon points="365,176 395,190 365,204"/>
   </g>
 </svg>
