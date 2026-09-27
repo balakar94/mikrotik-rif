@@ -217,7 +217,9 @@ desktop-template = "assets/linux/mikrotik-rif.desktop"
 #   * `window-size` / `app-position` are verified serde aliases; the window
 #     defaults to 600x400 and the icons to app (180, 170) / folder (480, 170)
 #     when unset (`src/package/dmg/mod.rs`). Values below pin the defaults for
-#     the icon slots and match the window to the 660x400 background.
+#     the icon slots and match the 660x400pt window to the 1320x800px @2x
+#     background (`assets/macos/dmg-background.png`, mastered from
+#     `assets/macos/dmg-background.svg`).
 #   * `application-folder-position` is the verified kebab alias of
 #     `appFolderPosition`. WARNING: `app-folder-position` and `window-position`
 #     / `window_size`-style variants of `window_position` do NOT exist in

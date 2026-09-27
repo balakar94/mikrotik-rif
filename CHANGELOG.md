@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Byte-granularity cancellation checkpoint (`CANCEL_CHECK_BYTES`, 1 MiB) in
+  `src/parser/scanner.rs`, in addition to the per-line check.
+- ASCII fast-path in `filter_parts` (`src/parser/capture.rs`) with unicode
+  (Ä/ä) coverage.
+- Accessible button roles (`WidgetInfo`) on icon buttons (`src/icons.rs`) and
+  the workspace `file_chip`.
+- Tests: byte-budget MRU eviction, cross-capture index isolation, CLI
+  stemless-path and sanitised-collision edges, endonym coverage for every
+  shipped locale, `TempDir` sequence.
+
+### Fixed
+
+- CLI capture size gate: `load_capture` in `src/cli.rs` rejects files over
+  512 MiB from metadata and from the post-read byte count.
+- Finished stage fade no longer freezes the frame; repaint is gated on
+  `FADE_SECONDS` in `src/app.rs`.
+- Updates tab (`src/app/settings/updates.rs`) renders without cloning release
+  state every frame.
+- Panic log (`src/panic.rs`) renames a pre-existing symlink aside instead of
+  writing through it.
+- ETag sanitization trims surrounding whitespace in `src/app.rs`, matching
+  the updater path.
+
 ## [0.7.0] - 2026-09-19
 
 ### Added

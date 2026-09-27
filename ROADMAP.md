@@ -46,6 +46,19 @@ words are honest about this repository's current state:
   and `--extract` (with `--module`/`--all` and `--out`/`--stdout`); a bare path
   or no arguments still opens the desktop viewer.
 
+- **CLI capture size gate (512 MiB)** — *done.* `load_capture` in `src/cli.rs`
+  rejects oversize inputs twice: once from file metadata before reading, once
+  from the byte count after reading. Prevents OOM on huge captures.
+
+- **ASCII fast-path in `filter_parts`** — *done.* `src/parser/capture.rs`
+  skips case-fold allocation for pure-ASCII queries; non-ASCII (e.g. Ä/ä)
+  still folds correctly. Covered by a unicode filter test.
+
+- **Byte-granularity cancellation checkpoint** — *done.*
+  `CANCEL_CHECK_BYTES` (1 MiB) in `src/parser/scanner.rs` trips the `Cancel`
+  token on byte budget in addition to the existing per-line check, so long
+  lines abort promptly.
+
 ## Release signing
 
 - **Binary/release signing with minisign** — *implemented, off by default, not
@@ -110,3 +123,30 @@ words are honest about this repository's current state:
   `cargo-about`, shipped inside every package, and checked in CI against
   `Cargo.lock`. The file embeds the crate version, so it must be regenerated
   in the same commit as every version bump.
+
+- **Stage-fade repaint driver** — *done.* `FADE_SECONDS` in `src/app.rs`
+  gates repaint requests while the stage transition fades, so a finished fade
+  no longer freezes the frame.
+
+- **Accessible roles on icon buttons and file chip** — *done.* `src/icons.rs`
+  and the workspace `file_chip` expose `WidgetInfo` button roles for
+  assistive tooling.
+
+- **Updates tab without per-frame clones** — *done.*
+  `src/app/settings/updates.rs` renders without cloning release state every
+  frame.
+
+- **Panic-log symlink guard** — *done.* `src/panic.rs` renames a pre-existing
+  symlink aside instead of writing through it. Covered by
+  `log_never_writes_through_a_symlink`.
+
+- **Unified ETag trim** — *done.* `sanitize_etag` in `src/app.rs` trims
+  surrounding whitespace before validation, matching the updater path.
+
+- **Cache and path edge tests** — *done.* Byte-budget MRU eviction
+  (`cache_evicts_by_bytes_preserving_mru`), cross-capture index isolation
+  (`cached_index_no_reutiliza_entre_capturas`), stemless-path rejection
+  (`default_parts_directory_rejects_stemless_path`), sanitised-stem
+  collisions (`unique_stem_handles_sanitised_collisions`), endonym coverage
+  for every shipped locale (`endonym_covers_every_shipped_locale`), plus a
+  `TempDir` sequence test.

@@ -237,11 +237,19 @@ Finder double-click then opens the capture in the viewer. No context-menu or
 
 ## macOS disk image background
 
-The `.dmg` opens a 660x400 drag-to-`/Applications` window with product
-identity: `assets/macos/dmg-background.png` (dark gradient echoing
-`assets/icon/icon.svg`, two drop-zone rings, sky arrow; no text, so it is
-localization-free, and no baked-in icons — Finder draws the `.app` icon and
-the `/Applications` symlink on top of the rings). It is wired through the
+The `.dmg` Finder window is 660x400pt with product identity:
+`assets/macos/dmg-background.png` (1320x800px, i.e. @2x of the 660x400pt
+window, mastered from vectorial `assets/macos/dmg-background.svg`: dark
+gradient echoing `assets/icon/icon.svg`, two drop-zone rings, sky arrow).
+Finder scales the PNG down to the smaller content rect inside the 660x400pt
+outer frame (the titlebar is not covered by the background), so shipping the
+@2x bitmap keeps it sharp on Retina while the 1x layout coords (icon slots,
+ring centres) stay the same. The background carries no text, so it is
+localization-free, and carries no baked-in icons —
+Finder draws the `.app` icon and the `/Applications` symlink on top of the
+rings, and the rings-plus-arrow artwork already shows the drop target, so the
+user-facing README lists only `.dmg` with no "drag ..." instruction. It is
+wired through the
 `[package.metadata.packager.dmg]` table in `Cargo.toml` (`background`,
 `window-size`, `app-position`, `application-folder-position` — the exact key
 spellings accepted by cargo-packager 0.11.8; notably `app-folder-position`
@@ -504,7 +512,8 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   workflow.
 - macOS `.app`/`.dmg` Gatekeeper behavior is only observable on a real macOS
   client.
-- The `.dmg` background (`assets/macos/dmg-background.png`, 660x400) and its
+- The `.dmg` background (`assets/macos/dmg-background.png`, 1320x800 @2x of
+  the 660x400pt window, mastered from `assets/macos/dmg-background.svg`) and
   icon slots (`app-position`, `application-folder-position`) are only
   eyeballable on a mounted image from a macOS CI run: check that the window
   is 660x400, the background fills it without scaling artifacts, and the

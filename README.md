@@ -39,13 +39,15 @@ traffic other than the opt-out update check described below.
   background worker thread, and the module list and text view are virtualized,
   so a module with hundreds of thousands of lines still scrolls smoothly.
   In-flight indexing and expansion can be cancelled cooperatively, so a new
-  choice does not wait for the old one to finish.
+  choice does not wait for the old one to finish. The name filter takes an
+  ASCII fast path, and long scans check for cancellation every 1 MiB.
 - **Honest about damage.** A part that cannot be indexed is still listed and
   marked, instead of being silently dropped. Structural problems in the
   container itself are surfaced in a dismissible notes banner rather than
   swallowed.
 - **Everything stays on the machine.** The parser is UI-agnostic and touches no
   files; the app writes nothing to disk unless you ask it to export a module.
+  The last-resort panic log never follows symlinks.
 - **Follows your system, remembers your choice.** Light/dark theme and
   interface language are detected from the OS and can be changed at any time in
   the Settings screen, where the choice is remembered across runs.
@@ -66,7 +68,7 @@ Intel/AMD) or `arm64`:
 | OS | Architectures | Package | First launch |
 | --- | --- | --- | --- |
 | **Windows** | `amd64`, `arm64` | `-setup.exe` installer (NSIS) | Unsigned: SmartScreen may warn — **More info → Run anyway**. |
-| **macOS** | Apple Silicon (`arm64`) only | `.dmg` (drag the app to Applications) | Unsigned: Gatekeeper blocks it — right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
+| **macOS** | Apple Silicon (`arm64`) only | `.dmg` | Unsigned: Gatekeeper blocks it — right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
 | **Debian / Ubuntu** | `amd64`, `arm64` | `.deb` | Installs a menu entry, an icon and the `.rif` file-type association. |
 | **Fedora / RHEL** | `amd64`, `arm64` | `.rpm` | Same as `.deb`. |
 | **Any Linux** | `amd64`, `arm64` | portable `.AppImage` | `chmod +x` and run it; no installation. |
@@ -105,14 +107,15 @@ The interface moves through four stages:
    target to pick one.
 3. **Opening.** While the capture is read and indexed, a page stack fans open
    under a magnifying glass. The animation tracks the real byte-read progress,
-   then fades into the workspace.
+   then fades into the workspace over 0.35 s on a repaint driver.
 4. **Workspace.** A **Modules** rail on the left with a name filter, and the
    decoded output of the selected module on the right.
 
 In the workspace:
 
 - The open capture is a chip in the top bar: click it (or `Cmd/Ctrl+O`) to open
-  another file, so the action sits next to the file name it acts on.
+  another file, so the action sits next to the file name it acts on. The chip
+  and the icon buttons expose accessible names and roles.
 - The **gear** on the right opens **Settings** (see below).
 - The rail can be collapsed from the panel button in the top bar, giving the
   text the full width.
@@ -166,7 +169,8 @@ with `--out`, to standard output with `--stdout`, or by default to a
 colliding labels with a numeric suffix instead of overwriting. A leading `--`
 treats the next argument as a path even if it starts with `-`. Exit codes are
 `0` for success, `1` for an operational failure (missing file, unreadable
-module) and `2` for a malformed command line.
+module) and `2` for a malformed command line. Captures larger than 512 MiB are
+rejected up-front with `file too large (>512 MiB)`.
 
 ## Settings
 
@@ -178,10 +182,11 @@ The gear in the top bar (and on the welcome and home screens), or
 - **Updates** — the running version and a short build hash (SHA-256 of the
   compilation commit; the commit itself is in the tooltip), the automatic-check
   toggle and a manual **Check for updates**. The automatic check runs on every
-  launch while enabled and reuses the previous response's ETag, so an unchanged
-  release answers `304` instead of consuming the GitHub API quota; skipping a
-  version keeps it quiet, and a manual check always surfaces it again. The tab
-  also shows when the last check ran. When a newer release exists it shows its
+  launch while enabled and reuses the previous response's trimmed ETag, so an
+  unchanged release answers `304` instead of consuming the GitHub API quota;
+  skipping a version keeps it quiet, and a manual check always surfaces it
+  again. The tab also shows when the last check ran and avoids per-frame
+  clones while polling. When a newer release exists it shows its
   notes and one action: **Download and install** on Windows and Linux,
   **Download the .dmg** on macOS. A download is SHA-256-verified against the
   release's `SHA256SUMS.txt` before anything is handed to the operating system
@@ -251,7 +256,8 @@ budgets:
 | Transcoded payloads (all parts) | 512 MiB |
 | Container line length | 128 MiB |
 
-No real capture is committed to this repository: captures can carry sensitive
+The CLI additionally rejects files larger than 512 MiB up-front. No real
+capture is committed to this repository: captures can carry sensitive
 router configuration, so the tests build synthetic captures in memory.
 
 ## Localization
