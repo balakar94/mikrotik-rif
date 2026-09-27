@@ -150,3 +150,22 @@ words are honest about this repository's current state:
   collisions (`unique_stem_handles_sanitised_collisions`), endonym coverage
   for every shipped locale (`endonym_covers_every_shipped_locale`), plus a
   `TempDir` sequence test.
+
+- **Crop-proof DMG background** — *done (0.8.2, supersedes the 0.8.1 pills).*
+  Plain light gradient with distributed arcs and zero positioned art, after
+  field evidence that resized Finder windows stretch the picture while icon
+  slots stay fixed.
+
+- **CLI/stdout and lookup perf** — *done (0.8.2).* Zero-copy
+  `extract_to_stdout`, `Capture::find_first_named`, memoized build hash.
+
+- **Workspace keyboard and cache** — *done (0.8.2).* Slash guard while
+  typing, search populates the view cache, dynamic gutter width.
+
+- **Locale and GUI-probe tests** — *done (0.8.2).*
+  `fluent_resources_parse_without_errors`, `shipped_matches_filesystem`,
+  liveness-based `bare_path` probe with headless skip.
+
+- **CI drift guards and corpus gate** — *done (0.8.2).* Packaging maps,
+  license allow-lists, `verify_corpus` plus regen check; `build.rs` watches
+  `.git/refs/heads`.

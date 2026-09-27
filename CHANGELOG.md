@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-09-27
+
+### Added
+
+- `Capture::find_first_named` for exact first-match module lookup.
+- CI guards: packaging file-map sync, license allow-list sync, fuzz corpus
+  replay plus regen check on Linux.
+- Tests: Fluent resources parse without errors, `SHIPPED` matches the
+  `locales/` filesystem, GUI liveness probe with headless skip.
+
+### Changed
+
+- DMG background is a plain light gradient with distributed arcs and no
+  positioned art: v0.8.1 white pills drifted off the labels in resized
+  Finder windows, so nothing is load-bearing at the pixel level anymore.
+
+### Fixed
+
+- `--extract --stdout` streams header then body instead of duplicating the
+  part text in memory.
+- `/` shortcut no longer steals focus while typing in a text field.
+- Global-search expansions populate the view cache, so opening a hit is
+  instant; the scan skips already-cached modules.
+- Gutter width derives from the line count instead of a fixed 8 columns.
+- Build hash memoized instead of re-hashing per frame in the Updates tab.
+- Local builds watch `.git/refs/heads` besides `.git/HEAD` for the embedded
+  commit.
+
 ## [0.8.1] - 2026-09-27
 
 ### Fixed
