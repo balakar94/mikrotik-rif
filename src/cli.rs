@@ -447,7 +447,7 @@ fn extract<W: Write>(request: &ExtractRequest, out: &mut W) -> Result<(), CliErr
 fn selected_indices(capture: &Capture, selection: &Selection) -> Result<Vec<usize>, CliError> {
     match selection {
         Selection::Module(label) => {
-            let Some(&index) = capture.indices_named(label).first() else {
+            let Some(index) = capture.find_first_named(label) else {
                 return Err(CliError::operational(format!("no module named {label:?}")));
             };
             let part = &capture.parts()[index];
@@ -500,18 +500,20 @@ fn extract_to_stdout<W: Write>(
         let text = capture.read(index, limits).map_err(|error| {
             CliError::operational(format!("cannot expand module {:?}: {error}", part.label()))
         })?;
-        let mut chunk = String::new();
+        // Two sequential writes keep the byte stream identical to the old
+        // single `chunk` write while avoiding a second copy of the expanded
+        // text (up to 256 MiB per part) in an intermediate `String`.
         if with_headers {
-            write!(
-                chunk,
+            let header = format!(
                 "\n===== {} [{}] =====\n",
                 escape_label(part.label()),
                 part.ordinal()
-            )
-            .expect("writing into a String never fails");
+            );
+            if write_bytes(out, header.as_bytes())? == Stream::Closed {
+                return Ok(());
+            }
         }
-        chunk.push_str(&text.text);
-        if write_bytes(out, chunk.as_bytes())? == Stream::Closed {
+        if write_bytes(out, text.text.as_bytes())? == Stream::Closed {
             return Ok(());
         }
     }

@@ -441,6 +441,19 @@ impl Capture {
             .collect()
     }
 
+    /// Index of the first part carrying `label`, in file order.
+    ///
+    /// The match is exact (`==` on the stored label); use
+    /// [`filter_parts`](crate::parser::capture::filter_parts) for the
+    /// case-insensitive substring search of the module rail. Returns `None`
+    /// when no part carries `label`. Equivalent to
+    /// `self.indices_named(label).first().copied()`, but stops at the first
+    /// hit instead of scanning the whole capture.
+    #[must_use]
+    pub fn find_first_named(&self, label: &str) -> Option<usize> {
+        self.parts.iter().position(|part| part.label == label)
+    }
+
     /// Expand one part into text.
     ///
     /// This expands directly through [`Capture::read_bytes`] with a
@@ -1223,5 +1236,30 @@ mod tests {
         let survivor = cache.get(0).expect("MRU must survive eviction");
         assert!(Arc::ptr_eq(&first, &survivor));
         assert!(cache.get(1).is_none(), "LRU must have been evicted");
+    }
+
+    #[test]
+    fn find_first_named_returns_the_first_exact_match() {
+        let source = wrap(&[
+            encode_part(b"dup", b"one"),
+            encode_part(b"dup", b"two"),
+            encode_part(b"other", b"three"),
+        ]);
+        let capture =
+            Capture::from_bytes(&source, &CaptureLimits::default()).expect("fixture must index");
+        // Duplicates return the first index; missing labels return `None`.
+        assert_eq!(capture.find_first_named("dup"), Some(0));
+        assert_eq!(capture.find_first_named("other"), Some(2));
+        assert_eq!(capture.find_first_named("missing"), None);
+        // Case differs: the match is exact, not case-insensitive.
+        assert_eq!(capture.find_first_named("DUP"), None);
+        // Stays consistent with the full scan.
+        for label in ["dup", "other", "missing", "DUP"] {
+            assert_eq!(
+                capture.find_first_named(label),
+                capture.indices_named(label).first().copied(),
+                "label {label:?}"
+            );
+        }
     }
 }

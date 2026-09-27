@@ -11,6 +11,7 @@
 //! commit is `unknown` and the digest still renders deterministically.
 
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 
 use sha2::{Digest as _, Sha256};
 
@@ -36,13 +37,18 @@ pub fn commit_short() -> String {
 ///
 /// This is the "build hash" shown in the interface. It is computed over the
 /// commit identifier, so it is stable and reproducible for every build of the
-/// same commit.
+/// same commit. The digest is memoised: the commit is a compile-time constant,
+/// so re-hashing it on every frame (e.g. the Updates tooltip) is pure waste.
 #[must_use]
 pub fn build_hash_short() -> String {
-    sha256_hex(GIT_COMMIT)
-        .chars()
-        .take(BUILD_HASH_LEN)
-        .collect()
+    static MEMO: OnceLock<String> = OnceLock::new();
+    MEMO.get_or_init(|| {
+        sha256_hex(GIT_COMMIT)
+            .chars()
+            .take(BUILD_HASH_LEN)
+            .collect()
+    })
+    .clone()
 }
 
 /// Lowercase SHA-256 hex digest of `input`.
