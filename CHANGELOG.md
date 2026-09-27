@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-09-27
 
 ### Added
 
@@ -14,9 +14,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (Ä/ä) coverage.
 - Accessible button roles (`WidgetInfo`) on icon buttons (`src/icons.rs`) and
   the workspace `file_chip`.
+- Single owner of file-name sanitizing in `src/filenames.rs` (`sanitize`,
+  `escape_label`); `cli` and the workspace reuse it.
+- Retina DMG background: `assets/macos/dmg-background.svg` master plus
+  1320x800 `@2x` PNG render, rings on the icon slots.
 - Tests: byte-budget MRU eviction, cross-capture index isolation, CLI
   stemless-path and sanitised-collision edges, endonym coverage for every
-  shipped locale, `TempDir` sequence.
+  shipped locale, `TempDir` sequence, panic symlink refusal, stdout
+  header-escape with a hostile label.
 
 ### Fixed
 
@@ -30,6 +35,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   writing through it.
 - ETag sanitization trims surrounding whitespace in `src/app.rs`, matching
   the updater path.
+- `extract_to_directory` refuses symlinks and uses exclusive creation with a
+  numeric-suffix fallback instead of silently truncating; `--list` and
+  `--extract --stdout` headers escape control/ANSI bytes in labels.
 
 ## [0.7.0] - 2026-09-19
 
