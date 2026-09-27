@@ -374,6 +374,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fluent_resources_parse_without_errors() {
+        for &(tag, source) in SHIPPED {
+            let resource = match FluentResource::try_new(source.to_owned()) {
+                Ok(resource) => resource,
+                Err((_, errors)) => {
+                    let first = errors.first().map_or_else(
+                        || "unknown parse error".to_owned(),
+                        |error| format!("{error:?}"),
+                    );
+                    panic!(
+                        "locale {tag} failed to parse: {first} ({} error(s))",
+                        errors.len()
+                    );
+                }
+            };
+            let id: LanguageIdentifier = tag
+                .parse()
+                .unwrap_or_else(|_| panic!("locale {tag} is not a valid language tag"));
+            let mut bundle = FluentBundle::new(vec![id]);
+            if let Err(errors) = bundle.add_resource(resource) {
+                let first = errors.first().map_or_else(
+                    || "unknown add_resource error".to_owned(),
+                    |error| format!("{error:?}"),
+                );
+                panic!(
+                    "locale {tag} failed add_resource: {first} ({} error(s))",
+                    errors.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shipped_matches_filesystem() {
+        let locales_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let entries = std::fs::read_dir(&locales_dir)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", locales_dir.display()));
+        let mut on_disk = std::collections::BTreeSet::new();
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|error| {
+                panic!("cannot read entry in {}: {error}", locales_dir.display())
+            });
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if !path.join("mikrotik-rif.ftl").is_file() {
+                continue;
+            }
+            let Some(tag) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            on_disk.insert(tag.to_owned());
+        }
+        let shipped: std::collections::BTreeSet<String> =
+            SHIPPED.iter().map(|(tag, _)| (*tag).to_owned()).collect();
+        let missing: Vec<&String> = on_disk.difference(&shipped).collect();
+        let extra: Vec<&String> = shipped.difference(&on_disk).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "SHIPPED does not match locales/: on disk without SHIPPED: {missing:?}, \
+             in SHIPPED without file: {extra:?}"
+        );
+    }
+
     /// The embedded source of one shipped locale.
     fn source_of(tag: &str) -> &'static str {
         SHIPPED

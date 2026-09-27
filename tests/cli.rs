@@ -419,9 +419,32 @@ fn extract_rejects_module_and_all_together() {
 
 #[test]
 fn bare_path_never_takes_the_cli_path() {
-    // A bare path must fall through to the desktop viewer. The viewer event loop
-    // would block forever, so start it, give it a moment, then reap it. We can
-    // only assert the negative here: no CLI usage or error text reaches stdout.
+    // A bare path must fall through to the desktop viewer, whose event loop
+    // blocks. Without a display the process aborts headless, which is
+    // indistinguishable from taking the CLI path, so skip explicitly there.
+    #[cfg(target_os = "linux")]
+    {
+        let has_x11 = std::env::var("DISPLAY")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        let has_wayland = std::env::var("WAYLAND_DISPLAY")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !has_x11 && !has_wayland {
+            eprintln!(
+                "skipping bare_path_never_takes_the_cli_path: no display \
+                 (DISPLAY and WAYLAND_DISPLAY are unset)"
+            );
+            return;
+        }
+    }
+
+    let wait_ms: u64 = std::env::var("MIKROTIK_RIF_GUI_WAIT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(300);
+    let wait = Duration::from_millis(wait_ms);
+
     let (_dir, path) = capture_file("bare-path", &[encode_part(b"log", b"line\n")]);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_mikrotik-rif"))
@@ -432,26 +455,52 @@ fn bare_path_never_takes_the_cli_path() {
         .spawn()
         .expect("spawn the viewer");
 
-    let deadline = Instant::now() + Duration::from_millis(300);
+    // Liveness probe: the viewer must still be alive at the deadline. An
+    // early exit means the CLI path (or a headless abort) took over.
+    let deadline = Instant::now() + wait;
+    let mut early_status = None;
     while Instant::now() < deadline {
-        if child.try_wait().expect("poll the viewer").is_some() {
-            break;
+        match child.try_wait().expect("poll the viewer") {
+            Some(status) => {
+                early_status = Some(status);
+                break;
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
         }
-        std::thread::sleep(Duration::from_millis(20));
     }
-    if child.try_wait().expect("poll the viewer").is_none() {
+    let alive_at_deadline = match child.try_wait().expect("poll the viewer") {
+        Some(status) => {
+            if early_status.is_none() {
+                early_status = Some(status);
+            }
+            false
+        }
+        None => true,
+    };
+    if alive_at_deadline {
         let _ = child.kill();
     }
 
     let output = child.wait_with_output().expect("reap the viewer");
     let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    let stderr_head: String = stderr.lines().take(20).collect::<Vec<_>>().join("\n");
+
     assert!(
-        !stdout.contains("Usage:"),
-        "a bare path printed CLI usage: {stdout:?}"
+        alive_at_deadline,
+        "the viewer exited early (status {:?}); expected it alive after {wait_ms}ms; \
+         stdout {stdout:?}; stderr head:\n{stderr_head}",
+        early_status.or(Some(output.status)),
     );
     assert!(
-        !stdout.contains("headless capture reader"),
-        "a bare path printed the CLI help banner: {stdout:?}"
+        !stdout.contains("Usage:") && !stderr.contains("Usage:"),
+        "a bare path printed CLI usage after {wait_ms}ms: stdout {stdout:?}; \
+         stderr head:\n{stderr_head}"
+    );
+    assert!(
+        !stdout.contains("headless capture reader") && !stderr.contains("headless capture reader"),
+        "a bare path printed the CLI help banner after {wait_ms}ms: stdout {stdout:?}; \
+         stderr head:\n{stderr_head}"
     );
 }
 
