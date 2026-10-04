@@ -42,7 +42,7 @@ semver = "1"
 sha2 = "0.11"
 # Optional release signing: the updater verifies `SHA256SUMS.txt.minisig`
 # whenever a public key was embedded at build time (see `src/update.rs`).
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 open = "5"
 
 # Compiles app.rc on Windows so the .exe carries the application icon.
