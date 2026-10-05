@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-05
+
+### Fixed
+
+- CI: fuzz corpus gate runs without `--locked` (no committed fuzz lockfile).
+- Tests: satisfy `map_unwrap_or` lint in the GUI probe.
+
 ## [0.8.2] - 2026-09-27
 
 ### Added
