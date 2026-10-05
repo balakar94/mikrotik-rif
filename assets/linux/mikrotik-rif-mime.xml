@@ -7,14 +7,17 @@
   - `MimeType=application/x-mikrotik-rif;` line in
   - assets/linux/mikrotik-rif.desktop resolves to a real type and double-click
   - opening works. The `x-` prefix marks it as an unregistered vendor type
-  - (no IANA registration exists for RouterOS captures). Glob-only matching
-  - (`*.rif`, the lowercase name RouterOS itself uses for `supout.rif`): no
-  - magic rule is declared. Database refresh is trigger-based (shared-mime-info
-  - packaging hooks run update-mime-database); no maintainer scriptlets are
-  - shipped. -->
+  - (no IANA registration exists for RouterOS captures). Glob-only matching:
+  - both `*.rif` and `*.RIF` are listed because Linux globs are
+  - case-sensitive while Windows/macOS are not, and RouterOS itself writes
+  - lowercase `supout.rif` but SMB/NFS shares or manual renames can preserve
+  - uppercase `.RIF`: no magic rule is declared. Database refresh is
+  - trigger-based (shared-mime-info packaging hooks run
+  - update-mime-database); no maintainer scriptlets are shipped. -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-mikrotik-rif">
     <comment>MikroTik RouterOS support capture</comment>
     <glob pattern="*.rif"/>
+    <glob pattern="*.RIF"/>
   </mime-type>
 </mime-info>

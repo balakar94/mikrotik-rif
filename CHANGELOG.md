@@ -10,6 +10,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - CI: fuzz corpus gate runs without `--locked` (no committed fuzz lockfile).
 - Tests: satisfy `map_unwrap_or` lint in the GUI probe.
+- Worker: expansion cache is owned per capture, so an `Expand` queued before
+  a new `Index` can no longer serve stale text under the new capture.
+- Linux MIME: `application/x-mikrotik-rif` also matches `*.RIF` uppercase
+  (Linux globs are case-sensitive).
 
 ## [0.8.2] - 2026-09-27
 
