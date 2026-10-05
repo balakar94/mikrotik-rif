@@ -8184,7 +8184,7 @@ Used by:
 - `dispatch 0.2.0` — http://github.com/SSheldon/rust-dispatch
 - `dpi 0.1.2` — https://github.com/rust-windowing/winit
 - `libm 0.2.16` — https://github.com/rust-lang/compiler-builtins
-- `minisign-verify 0.2.5` — https://github.com/jedisct1/rust-minisign-verify
+- `minisign-verify 0.3.0` — https://github.com/jedisct1/rust-minisign-verify
 - `objc-sys 0.3.5` — https://github.com/madsmtm/objc2
 - `objc2-app-kit 0.2.2` — https://github.com/madsmtm/objc2
 - `objc2-encode 4.1.0` — https://github.com/madsmtm/objc2
