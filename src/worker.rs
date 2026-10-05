@@ -227,14 +227,21 @@ impl Worker {
             .name("mikrotik-rif-worker".to_owned())
             .spawn(move || {
                 // The cache is keyed by part index, so it belongs to whichever
-                // capture was indexed last; only this thread ever touches it.
+                // capture was expanded last; only this thread ever touches it.
+                // `cache_owner` holds the capture the cache was filled from, so
+                // a queued `Expand` for an older capture cannot poison the
+                // entries of a newer one: any owner change clears first. The
+                // clone keeps the owner alive, so its address cannot be reused
+                // while the comparison is meaningful.
                 let mut cache = PartCache::default();
+                let mut cache_owner: Option<Arc<Capture>> = None;
                 while let Ok(job) = jobs_rx.recv() {
                     let keep_going = match job {
                         Job::Index { path, limits } => {
                             // A new capture invalidates every cached part: the
                             // indices now refer to different modules.
                             cache.clear();
+                            cache_owner = None;
                             channels.cache_counters.entries.store(0, Ordering::Relaxed);
                             channels.cache_counters.bytes.store(0, Ordering::Relaxed);
 
@@ -258,6 +265,21 @@ impl Worker {
                             limits,
                             seq,
                         } => {
+                            // The queue is FIFO, so an `Expand` for an older
+                            // capture can run after a newer `Index` already
+                            // cleared the cache: without an owner check it
+                            // would insert the old text under the new indices
+                            // and later serve it as a hit. A different owner
+                            // clears first, so stale text never survives.
+                            let owner_changed = cache_owner
+                                .as_ref()
+                                .is_none_or(|owner| !Arc::ptr_eq(owner, &capture));
+                            if owner_changed {
+                                cache.clear();
+                                channels.cache_counters.entries.store(0, Ordering::Relaxed);
+                                channels.cache_counters.bytes.store(0, Ordering::Relaxed);
+                                cache_owner = Some(Arc::clone(&capture));
+                            }
                             let cancel = Cancel::new();
                             *lock_cancel(&expand_cancel_thread) = Some(cancel.clone());
                             let keep = expand_with_cache(
@@ -920,5 +942,56 @@ mod tests {
         assert_eq!(after_second.hits, 1, "the second read is served from cache");
         assert_eq!(after_second.misses, 1, "no second inflation happened");
         assert_eq!(after_second.entries, 1);
+    }
+
+    #[test]
+    fn old_expand_after_new_index_no_contamina() {
+        let limits = CaptureLimits::default();
+        // Index 0 differs per capture: "hello\n" in A, "one\n" in B.
+        let capture_a = Arc::new(
+            Capture::from_bytes(&tiny_capture_bytes(), &limits).expect("fixture A must index"),
+        );
+        let capture_b = Arc::new(
+            Capture::from_bytes(&two_part_capture_bytes(), &limits).expect("fixture B must index"),
+        );
+
+        let path_b = temp_path("alias-b");
+        std::fs::write(&path_b, two_part_capture_bytes()).unwrap();
+
+        let worker = Worker::spawn();
+        // FIFO: the new index clears the cache, then the stale expand for A
+        // runs and fills it with A's text, then the current expand for B
+        // must not be served that stale text. Sequence `0` never drops.
+        worker.index_with_limits(path_b.clone(), limits);
+        worker.expand_with_seq(capture_a.clone(), 0, limits, 0);
+        worker.expand_with_seq(capture_b.clone(), 0, limits, 0);
+
+        let mut expanded = Vec::new();
+        while expanded.len() < 2 {
+            let next = settle(&worker, |event| match event {
+                Event::Expanded { index, text } => Some((index, text)),
+                Event::ExpandFailed { reason, .. } => panic!("expansion must succeed: {reason}"),
+                Event::Reading { .. }
+                | Event::Indexed { .. }
+                | Event::IndexFailed { .. }
+                | Event::ExpandProgress { .. }
+                | Event::ExpandCancelled { .. } => None,
+            });
+            expanded.push(next);
+        }
+        assert_eq!(expanded[0].0, 0);
+        assert_eq!(expanded[0].1.text, "hello\n", "the stale expand runs first");
+        assert_eq!(expanded[1].0, 0);
+        assert_eq!(
+            expanded[1].1.text, "one\n",
+            "the old expand must not poison the cache for the new capture"
+        );
+        let stats = worker.cache_stats();
+        assert_eq!(
+            stats.hits, 0,
+            "the second expand must miss after the owner change"
+        );
+
+        let _ = std::fs::remove_file(&path_b);
     }
 }
