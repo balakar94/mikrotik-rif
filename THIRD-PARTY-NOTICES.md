@@ -235,7 +235,7 @@ Used by:
 - `rustc_version 0.4.1` — https://github.com/djc/rustc-version-rs
 - `rustix 0.38.44` — https://github.com/bytecodealliance/rustix
 - `rustix 1.1.4` — https://github.com/bytecodealliance/rustix
-- `rustls 0.23.45` — https://github.com/rustls/rustls
+- `rustls 0.23.46` — https://github.com/rustls/rustls
 - `rusty-fork 0.3.1` — https://github.com/altsysrq/rusty-fork
 - `scoped-tls 1.0.1` — https://github.com/alexcrichton/scoped-tls
 - `scopeguard 1.2.0` — https://github.com/bluss/scopeguard

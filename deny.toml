@@ -38,6 +38,17 @@ ignore = [
     # No safe upgrade available; upstream alternative is skrifa, which requires
     # an eframe migration (requires Cargo.lock / dependency change).
     { id = "RUSTSEC-2026-0192", reason = "TODO(follow-up): ttf-parser unmaintained; track eframe migration to skrifa" },
+    # zvariant / zvariant_derive / zbus_names 5.x via zbus 5 -> accesskit_unix
+    # (Linux AT-SPI accessibility) -> accesskit_winit -> egui-winit -> eframe 0.36.
+    # The 5.x line was superseded by zbus 6 ("no longer maintained as a
+    # standalone crate"): upstream folded the derive macros into zbus, and a
+    # safe upgrade needs eframe 0.37, which pulls accesskit_unix 0.24 (zbus 6).
+    # These crates are Linux-only, are not reachable from the parser/updater
+    # attack surface, and the app never formats their values. Do not extend
+    # these reasons to a non-Linux path.
+    { id = "RUSTSEC-2026-0370", reason = "TODO(follow-up): zbus_names 4.x unmaintained (Linux AT-SPI only); upgrade via eframe 0.37 / accesskit_unix 0.24" },
+    { id = "RUSTSEC-2026-0371", reason = "TODO(follow-up): zvariant 5.x unmaintained (Linux AT-SPI only); upgrade via eframe 0.37 / accesskit_unix 0.24" },
+    { id = "RUSTSEC-2026-0372", reason = "TODO(follow-up): zvariant_derive 5.x unmaintained (Linux AT-SPI only); upgrade via eframe 0.37 / accesskit_unix 0.24" },
 ]
 unused-ignored-advisory = "warn"
 
