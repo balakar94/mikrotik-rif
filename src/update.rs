@@ -314,25 +314,35 @@ pub fn license_url() -> String {
 ///
 /// The release JSON is remote input: without this check a compromised API
 /// response could hand the downloader a `file://`, custom-scheme, or
-/// non-GitHub URL. Only `https://` on an [`ALLOWED_HOSTS`] host passes.
+/// non-GitHub URL. Only `https://` on an [`ALLOWED_HOSTS`] host passes, with no
+/// explicit port or the default `:443` — a crafted authority such as
+/// `github.com:8443` would otherwise reach a different service that merely
+/// shares the name.
+///
+/// The host comparison is ASCII case-insensitive; the `user:password@` prefix
+/// is dropped before matching, so `https://github.com@evil.example.com/` (whose
+/// real host is `evil.example.com`) is still refused.
 ///
 /// # Errors
 ///
-/// Returns [`UpdateError::InvalidUrl`] for any other scheme or host.
+/// Returns [`UpdateError::InvalidUrl`] for any other scheme, host, or port.
 pub fn check_url(url: &str) -> Result<(), UpdateError> {
     let invalid = || UpdateError::InvalidUrl(url.to_owned());
     let rest = url.strip_prefix("https://").ok_or_else(invalid)?;
     // Authority is everything before the first path/query/fragment delimiter.
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // Drop any `user:password@` prefix, then any `:port` suffix.
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or(authority)
-        .split(':')
-        .next()
-        .unwrap_or_default();
-    if ALLOWED_HOSTS.contains(&host) {
+    // Drop any `user:password@` prefix, then split off an optional `:port`.
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let (host, port) = host_port
+        .split_once(':')
+        .map_or((host_port, None), |(host, port)| (host, Some(port)));
+    if !matches!(port, None | Some("443" | "")) {
+        return Err(invalid());
+    }
+    if ALLOWED_HOSTS
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(host))
+    {
         Ok(())
     } else {
         Err(invalid())

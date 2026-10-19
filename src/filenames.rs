@@ -41,7 +41,9 @@ pub(crate) fn sanitize(label: &str) -> String {
         return "module".to_owned();
     }
     let stem = trimmed.split('.').next().unwrap_or(trimmed);
-    if is_windows_reserved(stem) {
+    // Win32 strips trailing spaces and dots from the stem before matching
+    // reserved device names, so `CON .txt` and `CON..txt` are reserved too.
+    if is_windows_reserved(stem.trim_end_matches(['.', ' ']).trim()) {
         return "module".to_owned();
     }
     trimmed.to_owned()
@@ -86,6 +88,13 @@ mod tests {
         assert_eq!(sanitize("a\x00b\x1Fc"), "abc");
         assert_eq!(sanitize("/"), "module");
         assert_eq!(sanitize("CON.txt"), "module");
+        // Win32 matches reserved stems after stripping trailing spaces and
+        // dots, so these are still device names on Windows.
+        assert_eq!(sanitize("CON .txt"), "module");
+        assert_eq!(sanitize("COM1. .log"), "module");
+        assert_eq!(sanitize("lpt9"), "module");
+        // A stem that only starts like a device name is not reserved.
+        assert_eq!(sanitize("CONSOLE.txt"), "CONSOLE.txt");
         let long = "x".repeat(100);
         assert_eq!(sanitize(&long).chars().count(), 64);
     }

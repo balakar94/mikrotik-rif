@@ -21,6 +21,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   way out is a future `accesskit_unix`/egui release that moves off zbus 5
   (0.24 still requires `zbus ^5.19`). They are Linux-only (AT-SPI
   accessibility) but stay visible as ignored rather than hidden.
+- Panic log: the file is now created exclusively (`O_CREAT|O_EXCL`, mode
+  `0600`) and an existing path is only opened after confirming it is not a
+  symlink; the opened handle is compared against the inspected inode, so a
+  link planted in the shared temporary directory can no longer redirect
+  panic text (or a chmod/truncate) into another file.
 
 ### Fixed
 
@@ -35,6 +40,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI: correct the fuzz workflow comment claiming the toolchain action exports
   `RUSTUP_TOOLCHAIN`; it only runs `rustup default`, which
   `rust-toolchain.toml` overrides, so the steps use `cargo +nightly`.
+- Worker: `Event::Expanded` carries the cache's `Arc<PartText>` instead of
+  `Arc::unwrap_or_clone`, so a cache hit no longer deep-copies a payload that
+  can reach `CaptureLimits::max_part_bytes` (256 MiB by default).
+- File names: Windows-reserved stems are matched after stripping trailing dots
+  and spaces, so `CON .txt` and `COM1. .log` no longer pass as ordinary names.
+- CLI: `--list`/`--extract` refuse a path that is not a regular file
+  (directory, FIFO, device) instead of reading it; `fs::read` on `/dev/zero`
+  had no cap and could grow without bound.
+- Updater: `check_url` refuses an explicit non-443 port and matches the host
+  ASCII case-insensitively, so `https://github.com:8443/…` is no longer
+  accepted on the strength of its host name.
 
 ### Changed
 

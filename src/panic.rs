@@ -171,36 +171,85 @@ fn append_log_to(path: &Path, message: &str, location: &str) -> std::io::Result<
             },
         );
     // Never follow a symlink at the log path: a pre-created link in the
-    // shared temporary directory could otherwise redirect panic output
-    // into an unrelated file. Rename the link aside (best effort, like
-    // every other I/O here) so the entry below lands on a fresh file.
-    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        let mut backup = path.as_os_str().to_owned();
-        backup.push(".symlink-bak");
-        let _ = std::fs::rename(path, PathBuf::from(backup));
-    }
-    // Truncation is done by reopening the file rather than with
-    // `File::set_len`: on Windows the append-only handle does not carry the
-    // access right that resizing requires, so `set_len` fails there.
-    let oversized = std::fs::metadata(path).is_ok_and(|meta| meta.len() > MAX_LOG_BYTES);
-    let mut file = if oversized {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(path)?
-    } else {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?
-    };
+    // shared temporary directory could otherwise redirect panic output into an
+    // unrelated file. `append_log_file` creates the entry exclusively first
+    // (which cannot follow a link), and only falls back to opening an existing
+    // entry after confirming it is not one.
+    let mut file = append_log_file(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     writeln!(file, "[{timestamp}] panic: {message} ({location})")
+}
+
+/// Open `path` for appending without ever following a symlink.
+///
+/// The first attempt uses `create_new`, which the kernel implements as
+/// `O_CREAT|O_EXCL`: it fails with `AlreadyExists` when anything at all sits at
+/// `path` — including a symlink, which `O_EXCL` refuses to follow — so a link
+/// planted in advance cannot capture the entry. Only when the existing entry is
+/// a regular file do we fall back to a plain append (truncating first when it
+/// exceeded [`MAX_LOG_BYTES`]); a link is moved aside and the exclusive create
+/// retried.
+///
+/// A link swapped in *after* the lstat and before the fallback `open` is still
+/// caught: the handle is compared against the inode that was inspected, and a
+/// mismatch fails the append instead of writing through the link. A lost log
+/// entry is an acceptable price for never writing panic text into an unrelated
+/// file.
+fn append_log_file(path: &Path) -> std::io::Result<std::fs::File> {
+    match exclusive_append_open(path) {
+        Ok(file) => return Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    // Inspected without following the path, so the size test below cannot be
+    // steered by a link target either.
+    let existing = std::fs::symlink_metadata(path)?;
+    if existing.file_type().is_symlink() {
+        let mut backup = path.as_os_str().to_owned();
+        backup.push(".symlink-bak");
+        let _ = std::fs::rename(path, PathBuf::from(backup));
+        return exclusive_append_open(path);
+    }
+    // Truncation is done by reopening the file rather than with
+    // `File::set_len`: on Windows the append-only handle does not carry the
+    // access right that resizing requires, so `set_len` fails there.
+    let oversized = existing.len() > MAX_LOG_BYTES;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(oversized)
+        .append(!oversized)
+        .open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // Same device and inode as the entry we inspected: the handle is the
+        // file we meant to append to and not the target of a link swapped in
+        // between the two syscalls.
+        let opened = file.metadata()?;
+        if (existing.dev(), existing.ino()) != (opened.dev(), opened.ino()) {
+            return Err(std::io::Error::other(
+                "panic log path was replaced while it was being opened",
+            ));
+        }
+    }
+    Ok(file)
+}
+
+/// Create `path` exclusively (Unix: mode `0o600`) and open it for appending.
+fn exclusive_append_open(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 #[cfg(test)]
@@ -291,6 +340,27 @@ mod tests {
                 .is_symlink(),
             "log path is a fresh file"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_file_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir =
+            std::env::temp_dir().join(format!("mikrotik-rif-panic-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let log = dir.join("panic.log");
+
+        append_log_to(&log, "mode-probe", "m.rs:1").expect("append");
+        let mode = std::fs::metadata(&log)
+            .expect("log metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "the log stays private to the user");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
