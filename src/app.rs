@@ -218,28 +218,6 @@ pub(crate) fn validate_input_path(path: &Path) -> Result<(), InputError> {
     Ok(())
 }
 
-/// Validate a persisted update-check ETag.
-///
-/// Accepts the value when it is non-empty, at most 2048 bytes and only
-/// printable ASCII (`0x20..=0x7E`, which already excludes `\r` and `\n`);
-/// anything else is discarded as `None` so a corrupt storage entry never
-/// reaches the network layer. Surrounding whitespace is trimmed to match
-/// `crate::update::sanitize_etag`; the 2048-byte cap and the charset are
-/// unchanged, and the network-side parser is untouched.
-pub(crate) fn sanitize_etag_value(value: &str) -> Option<String> {
-    if value.len() > 2048 {
-        return None;
-    }
-    if !value.bytes().all(|byte| (0x20..=0x7E).contains(&byte)) {
-        return None;
-    }
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed.to_owned())
-}
-
 /// Application state.
 pub struct Viewer {
     worker: Worker,
@@ -366,7 +344,7 @@ impl Viewer {
             .updater
             .etag
             .take()
-            .and_then(|value| sanitize_etag_value(&value));
+            .and_then(|value| update::sanitize_etag(&value));
 
         if let Some(argument) = std::env::args_os().nth(1) {
             viewer.start_scan(PathBuf::from(argument));
@@ -1322,27 +1300,6 @@ mod tests {
         drop(file);
         assert_eq!(validate_input_path(&path), Err(InputError::TooLarge));
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn etag_allows_printable_ascii_up_to_the_cap() {
-        assert_eq!(
-            sanitize_etag_value("\"abc123\""),
-            Some("\"abc123\"".to_owned())
-        );
-        assert_eq!(
-            sanitize_etag_value("W/\"xyz\""),
-            Some("W/\"xyz\"".to_owned())
-        );
-    }
-
-    #[test]
-    fn etag_rejects_empty_oversized_and_non_ascii() {
-        assert_eq!(sanitize_etag_value(""), None);
-        assert_eq!(sanitize_etag_value(&"a".repeat(2049)), None);
-        assert_eq!(sanitize_etag_value("etag\r\ninjected"), None);
-        assert_eq!(sanitize_etag_value("café"), None);
-        assert_eq!(sanitize_etag_value("with space\x7F"), None);
     }
 
     #[test]

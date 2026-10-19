@@ -1037,6 +1037,7 @@ fn etag_sanitization_rejects_unsafe_values() {
         "surrounding spaces are trimmed"
     );
     // CRLF injection is refused.
+    assert!(sanitize_etag("").is_none(), "empty refused");
     assert!(sanitize_etag("evil\r\nInjected: 1").is_none());
     assert!(sanitize_etag("a\nb").is_none());
     assert!(sanitize_etag("a\rb").is_none());

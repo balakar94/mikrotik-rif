@@ -361,16 +361,23 @@ fn render_changelog(ui: &mut egui::Ui, palette: &Palette, markdown: &str) {
 
 /// Strip the inline markdown the changelog uses (`**bold**` markers and
 /// `[text](url)` links) so it reads as plain interface copy.
+///
+/// Link text is taken from the nearest `[` before each `](`, so a stray
+/// literal bracket earlier in the line is preserved instead of swallowing the
+/// link that follows it. A `](` with no opener, or a link with no closing
+/// `)`, is left as literal text.
 fn plain_markdown(line: &str) -> String {
     let text = line.replace("**", "");
     let mut out = String::with_capacity(text.len());
     let mut rest = text.as_str();
-    while let Some(open) = rest.find('[') {
-        let Some(rel) = rest[open..].find("](") else {
-            break;
+    while let Some(close) = rest.find("](") {
+        let Some(open) = rest[..close].rfind('[') else {
+            out.push_str(&rest[..close + 2]);
+            rest = &rest[close + 2..];
+            continue;
         };
-        let close = open + rel;
         let Some(rel_end) = rest[close + 2..].find(')') else {
+            // Unterminated link: keep the remainder verbatim.
             break;
         };
         let end = close + 2 + rel_end;
@@ -380,4 +387,38 @@ fn plain_markdown(line: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_markdown;
+
+    #[test]
+    fn plain_markdown_strips_bold_and_links() {
+        assert_eq!(
+            plain_markdown("- **Fixed:** see [the notes](https://example.com/a)."),
+            "- Fixed: see the notes."
+        );
+        assert_eq!(
+            plain_markdown("[one](https://a) and [two](https://b)"),
+            "one and two"
+        );
+    }
+
+    #[test]
+    fn plain_markdown_keeps_stray_brackets_as_text() {
+        assert_eq!(plain_markdown("## [Unreleased]"), "## [Unreleased]");
+        assert_eq!(
+            plain_markdown("a [stray bracket and [a link](https://example.com)"),
+            "a [stray bracket and a link"
+        );
+        assert_eq!(
+            plain_markdown("a [bracket] and [a link](https://example.com)"),
+            "a [bracket] and a link"
+        );
+        assert_eq!(
+            plain_markdown("open [text](no closing paren"),
+            "open [text](no closing paren"
+        );
+    }
 }

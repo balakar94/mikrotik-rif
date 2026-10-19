@@ -730,13 +730,17 @@ fn unique_stem(label: &str, used: &mut HashSet<String>) -> String {
     if used.insert(base.clone()) {
         return base;
     }
-    let mut counter = 2_u32;
+    // `u64` rather than `u32`: saturating at `u32::MAX` would regenerate the
+    // same candidate forever once every suffix collided. At `u64` scale the
+    // counter cannot realistically wrap before the directory runs out of
+    // inodes.
+    let mut counter = 2_u64;
     loop {
         let candidate = format!("{base}-{counter}");
         if used.insert(candidate.clone()) {
             return candidate;
         }
-        counter = counter.saturating_add(1);
+        counter += 1;
     }
 }
 

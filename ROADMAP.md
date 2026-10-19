@@ -165,8 +165,10 @@ words are honest about this repository's current state:
   symlink aside instead of writing through it. Covered by
   `log_never_writes_through_a_symlink`.
 
-- **Unified ETag trim** — *done.* `sanitize_etag` in `src/app.rs` trims
-  surrounding whitespace before validation, matching the updater path.
+- **Unified ETag trim** — *done.* `update::sanitize_etag` (`src/update.rs`) is
+  the single implementation: it trims surrounding whitespace before validation
+  and both the network path and the persisted-value path in `src/app.rs` call
+  it, so the 2048-byte cap and charset cannot drift apart.
 
 - **Cache and path edge tests** — *done.* Byte-budget MRU eviction
   (`cache_evicts_by_bytes_preserving_mru`), cross-capture index isolation

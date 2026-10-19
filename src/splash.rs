@@ -33,8 +33,6 @@ pub struct ScanView<'a> {
 
 /// Draw the welcome screen. Returns `true` when Start was pressed.
 ///
-/// Draw the welcome screen. Returns `true` when Start was pressed.
-///
 /// The block is measured before it is drawn so it ends up on the true vertical
 /// centre of the panel instead of being placed by a rough estimate.
 pub fn welcome(ui: &mut egui::Ui, i18n: &I18n, palette: &Palette) -> bool {

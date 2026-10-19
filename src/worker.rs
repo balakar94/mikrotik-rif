@@ -315,30 +315,9 @@ impl Worker {
         }
     }
 
-    /// Queue a capture to be read and indexed with default budgets.
-    #[allow(
-        dead_code,
-        reason = "legacy compat wrapper; new code uses index_with_limits"
-    )]
-    pub fn index(&self, path: PathBuf) {
-        self.index_with_limits(path, CaptureLimits::default());
-    }
-
     /// Queue a capture to be read and indexed with explicit budgets.
     pub fn index_with_limits(&self, path: PathBuf, limits: CaptureLimits) {
         let _ = self.jobs.send(Job::Index { path, limits });
-    }
-
-    /// Queue a part to be expanded.
-    ///
-    /// Legacy path: sequence `0`, so the request is always decoded and the
-    /// resulting event always delivered.
-    #[allow(
-        dead_code,
-        reason = "legacy compat wrapper; new code uses expand_with_seq"
-    )]
-    pub fn expand(&self, capture: Arc<Capture>, index: usize, limits: CaptureLimits) {
-        self.expand_with_seq(capture, index, limits, 0);
     }
 
     /// Queue a part to be expanded, superseding older queued expansions.
@@ -384,12 +363,7 @@ impl Worker {
     ///
     /// Trips the expansion token so a large inflation aborts at its next read
     /// checkpoint. Queued expansions are governed by their sequence instead;
-    /// a request already superseded is dropped anyway. Base plumbing only —
-    /// the interface does not call this yet (Wave2 wiring).
-    #[allow(
-        dead_code,
-        reason = "Wave2 wiring; callers cancel expansions via cancel() for now"
-    )]
+    /// a request already superseded is dropped anyway.
     pub fn cancel_expand(&self) {
         trip_cancel(&self.expand_cancel);
     }
