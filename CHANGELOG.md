@@ -40,6 +40,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--out`/`--stdout`. The cap fails closed: the first part that would cross
   it is refused with an operational error (exit 1) before its output file is
   created, while output already written stays in place.
+- Release: generate the CycloneDX SBOM in a dedicated `contents: read` job
+  and hand it to the publishing job as an artifact. `cargo install` compiles
+  and runs a third-party build script, so it no longer executes in the job
+  that holds the write token, the OIDC grant and `MINISIGN_SECRET_KEY`.
 
 ### Fixed
 

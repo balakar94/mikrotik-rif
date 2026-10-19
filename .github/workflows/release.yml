@@ -34,9 +34,51 @@ jobs:
     permissions:
       contents: read
 
+  sbom:
+    name: generate SBOM
+    # `cargo install` compiles and runs a third-party build script. Keep it out
+    # of the publishing job below, which holds a write token, OIDC and the
+    # release signing secret: this job runs with `contents: read` only and
+    # hands the SBOM over as an artifact.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+
+      # Provenance: CycloneDX SBOM of the release tree, attached alongside the
+      # installers and covered by SHA256SUMS.txt (generated in the release job)
+      # and by the build-provenance attestation. Pinned install for
+      # reproducibility.
+      # cargo-cyclonedx 0.5.5 has no --output flag: --override-filename takes
+      # a bare stem (it appends .json itself) and always writes to the working
+      # directory (verified locally).
+      - name: Generate SBOM (CycloneDX)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-cyclonedx --locked --version 0.5.5
+          cargo cyclonedx --all --format json --override-filename sbom.cdx
+          ls -l sbom.cdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-sbom
+          path: sbom.cdx.json
+          if-no-files-found: error
+
   release:
     name: publish GitHub Release
-    needs: build
+    needs: [build, sbom]
     # Only a version tag publishes; workflow_dispatch keeps artifacts only,
     # unless the ephemeral-signing dry-run was requested (which also stops
     # before publishing; see the Publish step condition).
@@ -83,20 +125,11 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Provenance: CycloneDX SBOM of the release tree, attached alongside the
-      # installers and covered by SHA256SUMS.txt (generated next) and by the
-      # build-provenance attestation below. Pinned install for reproducibility.
-      # cargo-cyclonedx 0.5.5 has no --output flag: --override-filename takes
-      # a bare stem (it appends .json itself) and always writes to the
-      # working directory, hence the move into dist/ (verified locally).
-      - name: Generate SBOM (CycloneDX)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install cargo-cyclonedx --locked --version 0.5.5
-          cargo cyclonedx --all --format json --override-filename sbom.cdx
-          mv sbom.cdx.json dist/sbom.cdx.json
-          ls -l dist/sbom.cdx.json
+      - name: Download SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-sbom
+          path: dist
 
       - name: Generate SHA256SUMS.txt
         working-directory: dist

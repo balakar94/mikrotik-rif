@@ -164,9 +164,11 @@ file fails instead of silently publishing a partial release.
   `minisign -V` verifies it against `MIKROTIK_RIF_MINISIGN_PUBKEY` before
   publishing.
 
-The release job also generates `dist/sbom.cdx.json` (CycloneDX, via pinned
-`cargo-cyclonedx 0.5.5`; covered by `SHA256SUMS.txt` because it is generated
-before the manifest) and attaches a build-provenance attestation
+The `sbom` job — a separate `contents: read` job with no write token, OIDC
+grant or release key, because `cargo install` runs third-party build scripts —
+generates `sbom.cdx.json` (CycloneDX, via pinned `cargo-cyclonedx 0.5.5`) and
+uploads it. The release job downloads it into `dist/` before the manifest, so
+it is covered by `SHA256SUMS.txt` and by the build-provenance attestation
 (`actions/attest-build-provenance`, `subject-path: dist/*`).
 
 Reproducibility notes: `rust-toolchain.toml` pins Rust 1.95 (the crate
@@ -175,7 +177,7 @@ github.sha }}` into `cargo build --release --locked` so the baked-in commit is
 exact even without `.git`; runner labels are pinned (`ubuntu-24.04`,
 `macos-15`, `windows-2025`, plus the native `ubuntu-24.04-arm` /
 `windows-11-arm` arm64 runners); `build`/`ci test`/`deny` carry
-`timeout-minutes: 60` and `release` carries `20`. Both `build.yml` and
+`timeout-minutes: 60` and `release`/`sbom` carry `20`. Both `build.yml` and
 `release.yml` append `$GITHUB_STEP_SUMMARY` summaries (`rustc -Vv`,
 `git rev-parse HEAD`, `sha256sum dist/*`, `ls -lh`).
 
