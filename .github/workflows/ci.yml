@@ -65,9 +65,18 @@ jobs:
             libxcb-xfixes0-dev \
             libvulkan-dev
 
+      # Pin a `master` commit, not the `stable` branch. dtolnay force-rewrites
+      # `stable` on every Rust release, which drops the previously pinned
+      # commit from the ref history and trips zizmor's impostor-commit audit
+      # (seen twice: commit 3e5fd9e and again on 2026-10-18). `master` keeps
+      # its history, so a pinned master commit stays reachable; `toolchain:`
+      # is explicit because master's action.yml marks the input required
+      # (`stable` used to supply that default). Rotate all six call sites
+      # together and re-run zizmor when bumping this pin.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Cache Rust build artifacts
@@ -126,7 +135,7 @@ jobs:
             libvulkan-dev
 
       - name: Install Rust 1.95 (MSRV)
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
           toolchain: "1.95"
 
@@ -136,9 +145,10 @@ jobs:
           key: msrv-1.95
 
       # MSRV gate: the crate declares `rust-version = "1.95"` in Cargo.toml
-      # (the minimum the egui 0.36.2 tree builds with). Day-to-day work uses
-      # the pinned `stable` toolchain in rust-toolchain.toml; newer toolchains
-      # are covered by the `test` matrix above.
+      # (the minimum the egui 0.36.2 tree builds with). rust-toolchain.toml
+      # pins channel 1.95, so every job here compiles with 1.95 too: the
+      # `test` matrix currently repeats the MSRV build rather than exercising
+      # newer stable releases (see ROADMAP: "CI: really test newest stable").
       - name: Check MSRV
         run: cargo +1.95 check --locked
 
@@ -153,7 +163,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
 
       # Packaging hygiene: fails when `exclude`/`include` in Cargo.toml drifts
       # (e.g. a new top-level asset is not shipped) or when the manifest is
@@ -176,7 +188,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

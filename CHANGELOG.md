@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Updater: `rustls` 0.23.45 → 0.23.46, closing four RustSec advisories on the
+  TLS stack behind the opt-in update check — RUSTSEC-2026-0346 (`Debug` on
+  client session values exposed TLS secrets), RUSTSEC-2026-0347 (buffered
+  application data sent after ECH rejection), RUSTSEC-2026-0348 (Brotli
+  certificate decompression could allocate 1 GiB before authentication) and
+  RUSTSEC-2026-0349 (unauthenticated ServerHello could downgrade later
+  connections to classical key exchange).
+- `deny.toml`: record RUSTSEC-2026-0370/0371/0372 (`zvariant`, `zbus_names`
+  and `zvariant_derive` 5.x unmaintained) with explicit follow-up reasons.
+  All three carry `patched = []` — no release can satisfy them — and the only
+  way out is a future `accesskit_unix`/egui release that moves off zbus 5
+  (0.24 still requires `zbus ^5.19`). They are Linux-only (AT-SPI
+  accessibility) but stay visible as ignored rather than hidden.
+
+### Fixed
+
+- CI: pin `dtolnay/rust-toolchain` to a `master` commit instead of the
+  `stable` branch. dtolnay force-rewrites `stable` on every Rust release, so
+  the pinned commit stops being reachable from any ref and zizmor's
+  `impostor-commit` audit failed every run — the second occurrence after
+  3e5fd9e. `toolchain:` is now passed explicitly at each call site, since
+  `master`'s `action.yml` marks that input required.
+- CI: correct the MSRV job comment, which claimed the `test` matrix covers
+  newer toolchains; `rust-toolchain.toml` pins channel 1.95 for every job.
+- CI: correct the fuzz workflow comment claiming the toolchain action exports
+  `RUSTUP_TOOLCHAIN`; it only runs `rustup default`, which
+  `rust-toolchain.toml` overrides, so the steps use `cargo +nightly`.
+
+### Changed
+
+- Dependencies: `zbus_xml` 5.1.0 → 5.2.1 (with `zbus_names` and `zvariant`),
+  which replaces `quick-xml` with `winnow` and drops `quick-xml` 0.38.4 from
+  the lock, clearing RUSTSEC-2026-0194 and RUSTSEC-2026-0195 outright instead
+  of ignoring them.
+
 ## [0.9.0] - 2026-10-05
 
 ### Fixed

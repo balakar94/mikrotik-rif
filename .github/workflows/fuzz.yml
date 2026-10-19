@@ -58,13 +58,16 @@ jobs:
           # ephemeral GITHUB_TOKEN into .git/config (zizmor artipacked).
           persist-credentials: false
 
-      # Same SHA-pinned dtolnay action as ci.yml/release.yml. The explicit
+      # Same SHA-pinned dtolnay action as ci.yml/release.yml, pinned to a
+      # `master` commit for the reason documented there. The explicit
       # `toolchain: nightly` overrides rust-toolchain.toml's stable 1.95 pin:
       # cargo-fuzz adds -Zsanitizer=address and the sancov flags, which stable
-      # rustc rejects (fuzz/README.md -> Toolchain). The action also exports
-      # RUSTUP_TOOLCHAIN, but steps use `cargo +nightly` explicitly for clarity.
+      # rustc rejects (fuzz/README.md -> Toolchain). The action only runs
+      # `rustup default nightly`, which the checked-in rust-toolchain.toml
+      # overrides (default is the lowest-precedence choice), so the fuzz steps
+      # spell out `cargo +nightly` explicitly instead of relying on it.
       - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
           toolchain: nightly
 

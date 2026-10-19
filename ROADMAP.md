@@ -115,6 +115,28 @@ words are honest about this repository's current state:
   `poll_update` transitions that decide what the Settings screen shows are not
   unit-tested.
 
+- **Bounded line index in the viewer** — *candidate (security review).*
+  `compute_view` (`src/parser/capture.rs`) allocates one `usize` per line start,
+  and `max_part_bytes` is 256 MiB. A part made of newlines compresses to a few
+  hundred KiB in the envelope but expands to a multi-GiB `line_starts` vector on
+  the UI thread, so a small crafted capture can abort the process (infallible
+  alloc failure — the panic hook never runs). Cap the index (fall back to
+  on-demand line iteration above N lines), skip building it on the
+  global-search path, and account `line_starts` capacity in `view_bytes`.
+
+- **Aggregate budget for `--extract --all`** — *candidate (security review).*
+  Expansion is capped per part (`max_part_bytes`, 256 MiB) but nothing
+  accumulates across parts, so a 512 MiB capture of highly compressible
+  modules can write hundreds of GiB to `--out`/`--stdout`. Add a cumulative
+  decompressed-output cap that fails closed.
+
+- **CI: exercise the newest stable toolchain** — *candidate.* Every job
+  currently compiles with 1.95 because `rust-toolchain.toml` takes precedence
+  over the toolchain installed by the action, so the `test` matrix repeats the
+  MSRV build instead of catching newer-stable breakage. Setting
+  `RUSTUP_TOOLCHAIN: stable` (or a matrix-specific override) in the `test` job
+  would make the matrix meaningful while keeping `msrv` on `+1.95`.
+
 - **AppImage host integration** for double-click `.rif` — *host-dependent.* The
   portable image carries the desktop entry and MIME XML but does not install
   them; a host integrator (e.g. `appimage-launcher`) is required.
