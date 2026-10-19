@@ -60,7 +60,7 @@ impl Viewer {
         let toggle_hint = self.i18n.text("button-toggle-rail");
         let no_capture = self.i18n.text("label-no-capture");
         let settings_hint = self.settings_hint();
-        let settings_badge = self.update_available();
+        let settings_badge = self.updater.available();
         let source = self.source.clone();
 
         let mut open = false;

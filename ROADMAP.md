@@ -110,10 +110,13 @@ words are honest about this repository's current state:
   hygiene findings (matrix expansions in build scripts, artifact credential
   persistence, dependabot cooldown).
 
-- **Updater UI state-machine tests** — *candidate.* The network and verification
-  logic is covered through a fake transport (`src/update/tests.rs`), but the
-  `poll_update` transitions that decide what the Settings screen shows are not
-  unit-tested.
+- **Updater UI state-machine tests** — *done.* The check and download state,
+  plus the `poll` transitions that decide what Settings shows, live in the
+  standalone `Updater` struct (`src/app/update_ui.rs`), unit-tested without a
+  window or network: offered and skipped releases, `304`, up-to-date, manual
+  vs automatic failures, dropped channels, stale installers and
+  newest-progress-wins draining. The network and verification logic remains
+  covered through a fake transport (`src/update/tests.rs`).
 
 - **Bounded line index in the viewer** — *done.* `LineIndex`
   (`src/parser/view.rs`) stores one byte offset per 1024 lines and scans

@@ -74,6 +74,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Updater: the check/download state and the `poll` transitions moved from
+  `Viewer` into a standalone `Updater` struct, so they can be exercised
+  without an `eframe` context or a network. Fifteen unit tests now cover an
+  offered release, a skipped tag (quiet on automatic checks, shown on manual
+  ones), `304 Not Modified`, up-to-date answers, manual vs automatic failures,
+  dropped channels, stale installers, and newest-progress-wins download
+  draining.
 - CI: the `test` matrix builds and tests with the newest stable Rust on all
   three OSes (`RUSTUP_TOOLCHAIN: stable` at job level), while the `msrv` job
   remains the 1.95 gate and now also runs `cargo +1.95 fmt --all --check`, so

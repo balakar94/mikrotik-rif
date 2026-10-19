@@ -13,7 +13,6 @@ use eframe::egui::{self, RichText};
 use fluent_bundle::FluentArgs;
 
 use crate::app::Viewer;
-use crate::app::update_ui::{CheckState, DownloadState};
 use crate::app::workspace::human_size_u64;
 use crate::build_info;
 use crate::i18n;
@@ -59,10 +58,10 @@ impl Viewer {
         .on_hover_text(build_tooltip);
 
         ui.add_space(10.0);
-        ui.checkbox(&mut self.update_auto, &auto_label);
+        ui.checkbox(&mut self.updater.auto, &auto_label);
 
-        let checking = matches!(self.check, CheckState::Running { .. });
-        let downloading = matches!(self.download, DownloadState::Running { .. });
+        let checking = self.updater.is_checking();
+        let downloading = self.updater.is_downloading();
         let mut action = None;
 
         ui.add_space(10.0);
@@ -93,7 +92,7 @@ impl Viewer {
 
         self.changelog_button(ui, ctx);
 
-        if !checking && let Some(last) = self.update_last_check {
+        if !checking && let Some(last) = self.updater.last_check {
             let when = relative_time(&self.i18n, last, update::now_unix());
             let mut args = FluentArgs::new();
             args.set("when", when);
@@ -110,10 +109,10 @@ impl Viewer {
             Some(UpdateAction::Install) => self.start_install(),
             Some(UpdateAction::Launch) => self.launch_ready(ctx),
             Some(UpdateAction::Skip) => {
-                if let Some(release) = self.update_release.take() {
-                    self.update_skipped = release.tag;
+                if let Some(release) = self.updater.release.take() {
+                    self.updater.skipped = release.tag;
                 }
-                self.update_error = None;
+                self.updater.error = None;
             }
             Some(UpdateAction::OpenPage) => {
                 let _ = update::open_release_page(&update::releases_page_url());
@@ -140,9 +139,9 @@ impl Viewer {
         let install_label = self.install_label();
         let mut action = None;
 
-        if let Some((done, total)) = self.update_download {
+        if let Some((done, total)) = self.updater.progress {
             download_progress(ui, palette, done, total, &downloading_label);
-        } else if let Some((path, _digest)) = &self.update_ready {
+        } else if let Some((path, _digest)) = &self.updater.ready {
             let name = path.file_name().map_or_else(
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
@@ -170,7 +169,7 @@ impl Viewer {
             {
                 action = Some(UpdateAction::Launch);
             }
-        } else if let Some(reason) = &self.update_error {
+        } else if let Some(reason) = &self.updater.error {
             ui.label(RichText::new(reason.as_str()).color(palette.danger));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -181,7 +180,7 @@ impl Viewer {
                     action = Some(UpdateAction::OpenPage);
                 }
             });
-        } else if let Some(release) = &self.update_release {
+        } else if let Some(release) = &self.updater.release {
             let mut release_args = FluentArgs::new();
             release_args.set("version", release.tag.as_str());
             let headline = self.i18n.render("update-available", &release_args);
@@ -211,9 +210,9 @@ impl Viewer {
                         .color(palette.muted),
                 );
             }
-        } else if self.update_up_to_date == Some(true) {
+        } else if self.updater.up_to_date == Some(true) {
             ui.label(RichText::new(up_to_date_label.as_str()).color(palette.muted));
-        } else if self.update_last_check.is_none() {
+        } else if self.updater.last_check.is_none() {
             ui.label(RichText::new(never_checked_label.as_str()).color(palette.muted));
         }
         action
