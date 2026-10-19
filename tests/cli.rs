@@ -370,7 +370,11 @@ fn missing_capture_is_an_operational_failure() {
         "stderr {:?}",
         text(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {:?}",
+        text(&output.stdout)
+    );
 }
 
 #[test]
@@ -416,7 +420,11 @@ fn list_without_a_path_is_a_usage_error() {
         "stderr {:?}",
         text(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {:?}",
+        text(&output.stdout)
+    );
 }
 
 #[test]

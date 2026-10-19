@@ -52,7 +52,8 @@ fn reads_back_every_part_in_order() {
     let limits = CaptureLimits::default();
     let capture = Capture::from_bytes(&source, &limits).expect("capture must index");
     assert_eq!(capture.len(), 3);
-    assert!(capture.notes().is_empty());
+    let notes = capture.notes();
+    assert!(notes.is_empty(), "unexpected notes: {notes:?}");
 
     let labels: Vec<&str> = capture.parts().iter().map(Part::label).collect();
     assert_eq!(
@@ -88,7 +89,8 @@ fn duplicate_labels_are_kept_and_numbered() {
     );
     assert_eq!(capture.indices_named("export"), [0, 2, 3]);
     assert_eq!(capture.indices_named("other"), [1]);
-    assert!(capture.indices_named("missing").is_empty());
+    let missing = capture.indices_named("missing");
+    assert!(missing.is_empty(), "unexpected indices: {missing:?}");
 }
 
 #[test]

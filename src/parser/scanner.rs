@@ -275,7 +275,7 @@ mod tests {
         let mut notes = Vec::new();
         let spans = locate_parts(&source, &CaptureLimits::default(), &mut notes).unwrap();
         assert_eq!(spans.len(), 2);
-        assert!(notes.is_empty());
+        assert!(notes.is_empty(), "unexpected notes: {notes:?}");
         // The body range keeps the line ending; the transcoder skips whitespace.
         assert_eq!(&source[spans[0].start..spans[0].end], b"AAAA\n");
         assert_eq!(&source[spans[1].start..spans[1].end], b"BBBB\n");
@@ -334,7 +334,7 @@ mod tests {
         source.push(b'\n');
         let mut notes = Vec::new();
         let spans = locate_parts(&source, &CaptureLimits::default(), &mut notes).unwrap();
-        assert!(spans.is_empty());
+        assert!(spans.is_empty(), "unexpected spans: {spans:?}");
         assert_eq!(notes, vec![ContainerNote::StrayClose { offset: 5 }]);
     }
 
@@ -373,7 +373,7 @@ mod tests {
         let mut notes = Vec::new();
         let spans = locate_parts(&source, &CaptureLimits::default(), &mut notes)
             .expect("stray closes must not abort");
-        assert!(spans.is_empty());
+        assert!(spans.is_empty(), "unexpected spans: {spans:?}");
         assert_eq!(notes.len(), 1000, "notes must stop growing at the cap");
         assert!(
             notes
@@ -422,7 +422,7 @@ mod tests {
         source.push(b'\n');
         let spans = locate_parts(&source, &CaptureLimits::default(), &mut notes)
             .expect("a full notes buffer must not break scanning");
-        assert!(spans.is_empty());
+        assert!(spans.is_empty(), "unexpected spans: {spans:?}");
         assert_eq!(
             notes.len(),
             MAX_NOTES,

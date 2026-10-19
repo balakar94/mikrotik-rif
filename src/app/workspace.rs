@@ -463,7 +463,7 @@ impl Viewer {
                 }
                 // Gutter toggle: sidebar icon only, as everywhere else in
                 // the header. The localized name travels as hover text
-                // (see icons.rs for the egui 0.36 limitation).
+                // (see icons.rs for the egui limitation).
                 if icons::icon_button(
                     ui,
                     &palette,
@@ -1095,7 +1095,8 @@ mod tests {
 
     #[test]
     fn note_details_are_empty_for_an_empty_capture() {
-        assert!(note_details(&[], NOTES_DETAIL_LIMIT).is_empty());
+        let details = note_details(&[], NOTES_DETAIL_LIMIT);
+        assert!(details.is_empty(), "unexpected details: {details:?}");
     }
 
     #[test]
@@ -1126,7 +1127,8 @@ mod tests {
             note_details(&notes, 2),
             vec![("note-kind-nested-open", 1), ("note-kind-stray-close", 2)]
         );
-        assert!(note_details(&notes, 0).is_empty());
+        let limited = note_details(&notes, 0);
+        assert!(limited.is_empty(), "unexpected details: {limited:?}");
     }
 
     #[test]

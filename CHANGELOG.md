@@ -50,7 +50,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   3e5fd9e. `toolchain:` is now passed explicitly at each call site, since
   `master`'s `action.yml` marks that input required.
 - CI: correct the MSRV job comment, which claimed the `test` matrix covers
-  newer toolchains; `rust-toolchain.toml` pins channel 1.95 for every job.
+  newer toolchains; `rust-toolchain.toml` pins channel 1.95 for local
+  development, and the matrix now overrides it with `RUSTUP_TOOLCHAIN:
+  stable`.
 - CI: correct the fuzz workflow comment claiming the toolchain action exports
   `RUSTUP_TOOLCHAIN`; it only runs `rustup default`, which
   `rust-toolchain.toml` overrides, so the steps use `cargo +nightly`.
@@ -68,6 +70,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- CI: the `test` matrix builds and tests with the newest stable Rust on all
+  three OSes (`RUSTUP_TOOLCHAIN: stable` at job level), while the `msrv` job
+  remains the 1.95 gate and now also runs `cargo +1.95 fmt --all --check`, so
+  formatting stays tied to the toolchain pinned by `rust-toolchain.toml`.
 - Dependencies: `zbus_xml` 5.1.0 → 5.2.1 (with `zbus_names` and `zvariant`),
   which replaces `quick-xml` with `winnow` and drops `quick-xml` 0.38.4 from
   the lock, clearing RUSTSEC-2026-0194 and RUSTSEC-2026-0195 outright instead

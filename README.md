@@ -25,7 +25,7 @@ traffic other than the opt-out update check described below.
 
 - **Product name:** MikroTik RIF Viewer
 - **Package / binary:** `mikrotik-rif`
-- **Stack:** Rust (edition 2024) · [eframe/egui](https://github.com/emilk/egui) 0.36
+- **Stack:** Rust (edition 2024) · [eframe/egui](https://github.com/emilk/egui) 0.37
 - **License:** [MIT](LICENSE)
 
 ## Highlights
