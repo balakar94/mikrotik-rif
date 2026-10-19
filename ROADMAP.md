@@ -115,14 +115,13 @@ words are honest about this repository's current state:
   `poll_update` transitions that decide what the Settings screen shows are not
   unit-tested.
 
-- **Bounded line index in the viewer** — *candidate (security review).*
-  `compute_view` (`src/parser/capture.rs`) allocates one `usize` per line start,
-  and `max_part_bytes` is 256 MiB. A part made of newlines compresses to a few
-  hundred KiB in the envelope but expands to a multi-GiB `line_starts` vector on
-  the UI thread, so a small crafted capture can abort the process (infallible
-  alloc failure — the panic hook never runs). Cap the index (fall back to
-  on-demand line iteration above N lines), skip building it on the
-  global-search path, and account `line_starts` capacity in `view_bytes`.
+- **Bounded line index in the viewer** — *done.* `LineIndex`
+  (`src/parser/view.rs`) stores one byte offset per 1024 lines and scans
+  forward on demand, so the pathological newline-only part keeps a ~2 MiB index
+  instead of a multi-GiB `Vec<usize>`. It is built lazily, so the global search
+  caches expanded text without indexing it, and its retained bytes are counted
+  in the view-cache budget. Unit tests cover the pathological input, checkpoint
+  boundaries and multibyte lines.
 
 - **Aggregate budget for `--extract --all`** — *candidate (security review).*
   Expansion is capped per part (`max_part_bytes`, 256 MiB) but nothing

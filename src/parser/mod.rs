@@ -42,13 +42,15 @@ pub mod limits;
 pub mod scanner;
 
 mod capture;
+mod view;
 
 #[cfg(test)]
 mod roundtrip;
 
 pub use capture::{Capture, Part, PartCache, PartText};
-pub use capture::{compute_view, filter_parts, next_match};
+pub use capture::{filter_parts, next_match};
 pub use limits::{Cancel, CaptureLimits};
+pub use view::LineIndex;
 
 /// Human-readable product name.
 pub const PRODUCT_NAME: &str = "MikroTik RIF Viewer";

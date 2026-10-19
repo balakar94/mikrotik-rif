@@ -17,14 +17,13 @@ mod workspace;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, ThemePreference};
 use fluent_bundle::FluentArgs;
 
 use crate::i18n::I18n;
-use crate::parser::{
-    Capture, CaptureLimits, Part, PartText, compute_view, filter_parts, next_match,
-};
+use crate::parser::{Capture, CaptureLimits, LineIndex, Part, PartText, filter_parts, next_match};
 use crate::update::{self, ReleaseInfo};
 
 use crate::splash::{self, ScanView};
@@ -83,13 +82,39 @@ struct Notice {
 /// `Arc` clone and never re-indexes the text. [`PartText`] is shared, so the
 /// worker can hand back either an owned text or an [`Arc`] without the cache
 /// depending on which one the worker contract uses.
+///
+/// The index is built on first use: the global search expands and caches every
+/// readable module without ever rendering it, and there is no reason to walk
+/// megabytes of text for a view the user may never open.
 struct BodyView {
     /// Expanded text.
     text: Arc<PartText>,
-    /// Byte offset at which each line starts.
-    line_starts: Vec<usize>,
-    /// Longest line in characters, ignoring line endings.
-    max_line_chars: usize,
+    /// Line index over [`Self::text`], built when the view is first shown.
+    index: OnceLock<LineIndex>,
+}
+
+impl BodyView {
+    /// Wrap expanded text; the index is built lazily.
+    fn new(text: Arc<PartText>) -> Self {
+        Self {
+            text,
+            index: OnceLock::new(),
+        }
+    }
+
+    /// Line index over the expanded text, built once.
+    fn index(&self) -> &LineIndex {
+        self.index.get_or_init(|| LineIndex::new(&self.text.text))
+    }
+
+    /// Heap bytes this view retains: the text plus the index once it exists.
+    fn retained_bytes(&self) -> usize {
+        self.text.text.len()
+            + self
+                .index
+                .get()
+                .map_or(0, crate::parser::LineIndex::retained_bytes)
+    }
 }
 
 /// Number of expanded modules kept in the view cache.
@@ -246,8 +271,6 @@ pub struct Viewer {
     views: HashMap<usize, Arc<BodyView>>,
     /// Insertion order of [`Self::views`] keys, for bounded eviction.
     view_order: VecDeque<usize>,
-    /// Retained text bytes currently held by [`Self::views`].
-    view_bytes: usize,
     find: String,
     matches: Vec<usize>,
     match_cursor: usize,
@@ -337,7 +360,6 @@ impl Viewer {
             body: None,
             views: HashMap::new(),
             view_order: VecDeque::new(),
-            view_bytes: 0,
             find: String::new(),
             matches: Vec::new(),
             match_cursor: 0,
@@ -436,7 +458,6 @@ impl Viewer {
         self.body = None;
         self.views.clear();
         self.view_order.clear();
-        self.view_bytes = 0;
         self.matches.clear();
         self.visible.clear();
         self.selected = None;
@@ -536,7 +557,6 @@ impl Viewer {
                     // A new index invalidates every cached view.
                     self.views.clear();
                     self.view_order.clear();
-                    self.view_bytes = 0;
                     self.notes = NotesState::Collapsed;
                     let message = self.i18n.count("status-indexed", modules);
                     self.set_notice(message, false);
@@ -586,12 +606,7 @@ impl Viewer {
             });
             // Cache the expanded text so opening a hit is an `Arc` clone
             // instead of a second expansion behind a spinner.
-            let (line_starts, max_line_chars) = compute_view(&text.text);
-            let view = Arc::new(BodyView {
-                text: Arc::clone(&text),
-                line_starts,
-                max_line_chars,
-            });
+            let view = Arc::new(BodyView::new(Arc::clone(&text)));
             self.remember_view(index, &view);
             if let Some(search) = self.search.as_mut() {
                 search.in_flight = None;
@@ -650,35 +665,33 @@ impl Viewer {
 
     /// Store an expanded module so a later revisit is an `Arc` clone.
     fn set_body<T: Into<Arc<PartText>>>(&mut self, index: usize, text: T) {
-        let text = text.into();
-        // One kernel yields both the line starts and the longest line in
-        // characters, exactly the pair the reading surface scrolls against.
-        let (line_starts, max_line_chars) = compute_view(&text.text);
-        let view = Arc::new(BodyView {
-            text,
-            line_starts,
-            max_line_chars,
-        });
+        let view = Arc::new(BodyView::new(text.into()));
         self.remember_view(index, &view);
         self.show_view(view);
     }
 
     /// Insert a view into the bounded cache, evicting the oldest entries.
     fn remember_view(&mut self, index: usize, view: &Arc<BodyView>) {
-        let size = view.text.text.len();
-        if let Some(old) = self.views.insert(index, Arc::clone(view)) {
-            self.view_bytes = self.view_bytes.saturating_sub(old.text.text.len());
-        } else {
+        if self.views.insert(index, Arc::clone(view)).is_none() {
             self.view_order.push_back(index);
         }
-        self.view_bytes = self.view_bytes.saturating_add(size);
-        while self.view_order.len() > VIEW_CACHE_ENTRIES || self.view_bytes > VIEW_CACHE_BYTES {
-            let Some(oldest) = self.view_order.pop_front() else {
-                break;
-            };
-            if let Some(removed) = self.views.remove(&oldest) {
-                self.view_bytes = self.view_bytes.saturating_sub(removed.text.text.len());
+        self.evict_views();
+    }
+
+    /// Drop the oldest cached views until both budgets are met again.
+    ///
+    /// The byte budget is recomputed from the live entries because a view's
+    /// line index is built lazily when it is first shown, after insertion.
+    fn evict_views(&mut self) {
+        loop {
+            let bytes: usize = self.views.values().map(|view| view.retained_bytes()).sum();
+            if self.view_order.len() <= VIEW_CACHE_ENTRIES && bytes <= VIEW_CACHE_BYTES {
+                return;
             }
+            let Some(oldest) = self.view_order.pop_front() else {
+                return;
+            };
+            self.views.remove(&oldest);
         }
     }
 

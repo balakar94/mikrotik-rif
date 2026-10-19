@@ -722,20 +722,16 @@ impl Viewer {
         // not flicker as different rows enter and leave the viewport.
         let char_width = ui.ctx().fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
 
-        let (text, line_starts, max_line_chars) = match &self.body {
-            Some(body) => (
-                body.text.text.as_str(),
-                &body.line_starts,
-                body.max_line_chars,
-            ),
+        let (text, index) = match &self.body {
+            Some(body) => (body.text.text.as_str(), body.index()),
             None => return,
         };
-        let lines = line_starts.len();
+        let lines = index.line_count();
         // Gutter width follows the line count: digits plus two spaces, so a
         // 50-line module uses `{:>2}  ` instead of the old fixed `{:>6}  `.
         let digits = lines.to_string().len().max(1);
         let gutter_chars = if gutter { digits + 2 } else { 0 };
-        let content_width = (gutter_chars + max_line_chars) as f32 * char_width;
+        let content_width = (gutter_chars + index.max_line_chars()) as f32 * char_width;
 
         let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
         if let Some(row) = jump {
@@ -744,9 +740,7 @@ impl Viewer {
         area.show_rows(ui, row_height, lines, |ui, range| {
             ui.set_min_width(content_width);
             for row in range {
-                let start = line_starts[row];
-                let end = line_starts.get(row + 1).copied().unwrap_or(text.len());
-                let raw = &text[start..end];
+                let raw = &text[index.line_range(text, row)];
                 let line = raw.strip_suffix('\n').unwrap_or(raw);
                 let line = line.strip_suffix('\r').unwrap_or(line);
 
@@ -786,13 +780,9 @@ impl Viewer {
         if !needle.is_empty()
             && let Some(body) = &self.body
         {
-            for (row, &start) in body.line_starts.iter().enumerate() {
-                let end = body
-                    .line_starts
-                    .get(row + 1)
-                    .copied()
-                    .unwrap_or(body.text.text.len());
-                if find_case_insensitive(&body.text.text[start..end], &needle, 0).is_some() {
+            let text = body.text.text.as_str();
+            for (row, line) in body.index().lines(text) {
+                if find_case_insensitive(line, &needle, 0).is_some() {
                     found.push(row);
                 }
             }
@@ -1094,20 +1084,6 @@ pub(crate) fn human_size_u64(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::compute_view;
-
-    #[test]
-    fn compute_view_covers_every_line_start() {
-        assert_eq!(compute_view("").0, vec![0]);
-        assert_eq!(compute_view("a\nb\n").0, vec![0, 2, 4]);
-        assert_eq!(compute_view("a\nb").0, vec![0, 2]);
-    }
-
-    #[test]
-    fn compute_view_ignores_line_endings_when_measuring_width() {
-        let (_, longest) = compute_view("a\r\nlonger line\nx");
-        assert_eq!(longest, 11);
-    }
 
     #[test]
     fn case_insensitive_search_finds_all_offsets() {
