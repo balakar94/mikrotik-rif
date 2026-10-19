@@ -15,8 +15,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   certificate decompression could allocate 1 GiB before authentication) and
   RUSTSEC-2026-0349 (unauthenticated ServerHello could downgrade later
   connections to classical key exchange).
-- `deny.toml`: record RUSTSEC-2026-0370/0371/0372 (`zvariant`, `zbus_names`
-  and `zvariant_derive` 5.x unmaintained) with explicit follow-up reasons.
+- `deny.toml`: record RUSTSEC-2026-0370/0371/0372 (`zvariant` and
+  `zvariant_derive` 5.x, `zbus_names` 4.x; all unmaintained) with explicit
+  follow-up reasons.
   All three carry `patched = []` — no release can satisfy them — and the only
   way out is a future `accesskit_unix`/egui release that moves off zbus 5
   (0.24 still requires `zbus ^5.19`). They are Linux-only (AT-SPI
@@ -57,6 +58,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Updates tab: strip inline markdown links with the nearest preceding `[`
+  before each `](`, instead of abandoning the scan at the first stray bracket.
+  A line like `a [stray and [a link](url)` now renders its link as text
+  instead of leaving the raw markdown in place.
+- CLI: `unique_stem` counts collisions with a `u64` instead of a saturating
+  `u32`, so a pathological destination can no longer pin the counter at
+  `4294967295` and regenerate the same candidate forever.
 - CI: pin `dtolnay/rust-toolchain` to a `master` commit instead of the
   `stable` branch. dtolnay force-rewrites `stable` on every Rust release, so
   the pinned commit stops being reachable from any ref and zizmor's
@@ -91,6 +99,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ones), `304 Not Modified`, up-to-date answers, manual vs automatic failures,
   dropped channels, stale installers, and newest-progress-wins download
   draining.
+- Documentation: `docs/RELEASE.md` now lists all five workflows (`ci`,
+  `build`, `release`, `packaging-smoke`, `fuzz`) and describes the CI gate as
+  it actually is (deny, zizmor, gitleaks, corpus checks and drift guards), not
+  as "pure test".
+- Updater: `update::sanitize_etag` is the single ETag sanitizer for both the
+  network path and the persisted-value path in `src/app.rs`. The duplicate
+  validator (with its own hardcoded 2048-byte cap) is gone, so the two cannot
+  drift apart.
+- Worker: drop the stale `dead_code` allowances on `cancel_expand` (the
+  workspace has called it since Wave2) and delete the unused legacy `index`
+  and `expand` wrappers; production only uses `index_with_limits` and
+  `expand_with_seq`.
+- Tests: cover the 512 MiB CLI capture gate end to end with a sparse file, and
+  `Capture::from_reader`'s over-budget and exact-boundary paths.
 - CI: the `test` matrix builds and tests with the newest stable Rust on all
   three OSes (`RUSTUP_TOOLCHAIN: stable` at job level), while the `msrv` job
   remains the 1.95 gate and now also runs `cargo +1.95 fmt --all --check`, so

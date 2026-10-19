@@ -170,6 +170,32 @@ fn a_directory_is_not_a_capture() {
 }
 
 #[test]
+fn an_oversized_capture_is_refused_before_reading() {
+    // A sparse file: `set_len` grows the logical size without writing 512 MiB,
+    // so this stays cheap on every CI runner. The cap is checked from file
+    // metadata before `fs::read` can allocate the whole thing.
+    let dir = TempDir::new("oversized-input");
+    let path = dir.path().join("huge.rif");
+    let file = std::fs::File::create(&path).expect("create the sparse capture");
+    file.set_len(512 * 1024 * 1024 + 1)
+        .expect("grow the sparse capture");
+    drop(file);
+
+    let output = cli(&[OsStr::new("--list"), path.as_os_str()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr {}",
+        text(&output.stderr)
+    );
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("file too large"),
+        "the cap is explained: {stderr:?}"
+    );
+}
+
+#[test]
 fn list_reports_every_part_and_marks_unreadable_ones() {
     let (_dir, path) = capture_file(
         "list",

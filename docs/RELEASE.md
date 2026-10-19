@@ -5,20 +5,26 @@ Actions. The workflows live in `.github/workflows/`.
 
 ## Workflows
 
-There are three workflows. `build.yml` owns the packaging matrix; `release.yml`
-only orchestrates it; `ci.yml` is pure test.
+There are five workflows. `build.yml` owns the packaging matrix; `release.yml`
+only orchestrates it; `ci.yml` is the pull-request gate; `packaging-smoke.yml`
+runs the same packaging matrix outside tags; `fuzz.yml` runs a non-blocking
+scheduled fuzz campaign.
 
 | Workflow | File | Trigger | Purpose |
 | --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | Format, lint and test on Linux, macOS and Windows. It does not build release binaries, package anything, or upload artifacts. |
+| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | The whole pull-request gate: format, lint and test on Linux, macOS and Windows; the MSRV (1.95) compile plus the pinned-toolchain `rustfmt` check; `cargo-deny` (advisories and licences); the zizmor workflow audit and the gitleaks secret scan; fuzz-corpus verification and drift guards (notices, packaging maps, licence allow-lists). It does not build release binaries, package anything, or upload artifacts. |
 | Build | `.github/workflows/build.yml` | `workflow_dispatch`, `workflow_call` | Build and package the native installers for all five runner/architecture combinations and upload them as workflow artifacts. It never publishes a release. |
-| Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Orchestration only: it calls `build.yml` (job `build`), then — for `v*` tags and only then — downloads the artifacts, computes checksums and publishes a GitHub Release. |
+| Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Orchestration only: it calls `build.yml` (job `build`), generates the SBOM in an unprivileged `sbom` job, then — for `v*` tags and only then — downloads the artifacts, computes checksums and publishes a GitHub Release. |
+| Packaging smoke | `.github/workflows/packaging-smoke.yml` | weekly `schedule`, `workflow_dispatch` | Calls `build.yml` outside tags so a packaging regression (like the v0.1.0 WiX failure) is caught before release week. It never publishes. |
+| Fuzz | `.github/workflows/fuzz.yml` | weekly `schedule`, `workflow_dispatch` | Runs the `cargo-fuzz` campaign (nightly toolchain, per-target time budget). Non-blocking by design: the job may fail, surfacing a crash artifact without gating pull requests or releases. It deliberately does not run on `pull_request`. |
 
 ### Which workflow runs when
 
 - **Push to `main` / pull request** → `ci.yml` only.
 - **Manual `workflow_dispatch` of `build.yml`** → packages every platform and
   uploads the artifacts to that run. Nothing is published.
+- **Weekly schedule** → `packaging-smoke.yml` (Mondays 06:00 UTC) and
+  `fuzz.yml` (Mondays 04:17 UTC) run on their own; neither can publish.
 - **Manual `workflow_dispatch` of `release.yml`** → calls `build.yml`, uploads
   the same artifacts, and skips the `release` job because `github.ref` is a
   branch, not a `v*` tag.

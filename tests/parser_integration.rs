@@ -117,6 +117,27 @@ fn from_reader_maps_io_failure_to_stream_read() {
 }
 
 #[test]
+fn from_reader_refuses_a_stream_over_the_budget() {
+    let source = vec![0_u8; 9];
+    let limits = CaptureLimits {
+        max_total_payload_bytes: 8,
+        ..CaptureLimits::default()
+    };
+    assert!(matches!(
+        Capture::from_reader(source.as_slice(), &limits).unwrap_err(),
+        RifError::BudgetExceeded { limit } if limit == 8
+    ));
+
+    // The boundary itself is accepted (and then fails as a malformed capture,
+    // not as a budget error).
+    let exact = vec![0_u8; 8];
+    assert!(!matches!(
+        Capture::from_reader(exact.as_slice(), &limits),
+        Err(RifError::BudgetExceeded { .. })
+    ));
+}
+
+#[test]
 fn one_byte_reader_indexes_identically_to_bytes() {
     let source = build_capture(&[
         (b"/system/resource", b"uptime: 1d\nversion: 7.16.2\n"),

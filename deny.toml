@@ -33,18 +33,19 @@ ignore = [
     # No safe upgrade available; upstream alternative is skrifa, which requires
     # an eframe migration (requires Cargo.lock / dependency change).
     { id = "RUSTSEC-2026-0192", reason = "TODO(follow-up): ttf-parser unmaintained; track eframe migration to skrifa" },
-    # zvariant / zbus_names / zvariant_derive 5.x via zbus 5 -> accesskit_unix
+    # zvariant / zvariant_derive 5.x and zbus_names 4.x via zbus 5 -> accesskit_unix
     # (Linux AT-SPI accessibility) -> accesskit_winit -> egui-winit -> eframe 0.37.
     # All three are informational "unmaintained" advisories with `patched = []`:
-    # no release can ever satisfy them, and the whole 5.x line is affected
-    # (zvariant 5.15.1 still depends on zvariant_derive 5.x). There is no zbus-6
-    # consumer to migrate to yet — accesskit_unix 0.24.0 (the newest, pulled by
-    # egui 0.37) still requires `zbus ^5.19` — so the only way out is a future
-    # accesskit/egui release that moves to zbus 6. Re-check on every accesskit
+    # no release can ever satisfy them, and every published version is affected
+    # (zvariant 5.15.1 still depends on zvariant_derive 5.x; zbus 5 pulls
+    # zbus_names 4.3.5). There is no zbus-6 consumer to migrate to yet —
+    # accesskit_unix 0.24.0 (the newest, pulled by egui 0.37) still requires
+    # `zbus ^5.19` — so the only way out is a future accesskit/egui release
+    # that moves to zbus 6. Re-check on every accesskit
     # or egui release; these crates are Linux-only, are not reachable from the
     # parser or updater attack surface, and the app never formats their values.
     { id = "RUSTSEC-2026-0370", reason = "TODO(follow-up): zvariant 5.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
-    { id = "RUSTSEC-2026-0371", reason = "TODO(follow-up): zbus_names 5.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "TODO(follow-up): zbus_names 4.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
     { id = "RUSTSEC-2026-0372", reason = "TODO(follow-up): zvariant_derive 5.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
 ]
 unused-ignored-advisory = "warn"
