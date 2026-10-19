@@ -12,6 +12,24 @@ words are honest about this repository's current state:
 - **candidate** — worth considering, not scheduled.
 - **not planned for now** — deliberately out of scope.
 
+## 1.0.0
+
+Released 2026-10-19. Version 1.0.0 is the first stability commitment for the
+parts other software depends on:
+
+- **CLI contract**: the `--list` / `--extract` flags, the tab-separated
+  `--list` output and the exit codes (0 success, 1 operational failure,
+  2 usage error) are stable across 1.x.
+- **Library surface**: the `mikrotik_rif::parser` types and error variants
+  follow Semantic Versioning; breaking changes require a major bump.
+- **Release contract**: the updater's asset names
+  (`mikrotik-rif_<version>_<arch>.<ext>`), `SHA256SUMS.txt` and the optional
+  minisign signature keep their documented shape, so existing installs can
+  keep updating themselves.
+
+Everything below is post-1.0 work: none of it blocks the release, and the
+"candidate" / "not planned" labels still say what is scheduled and what is not.
+
 ## Parser and tooling
 
 - **Cooperative cancellation of indexing and expansion** — *done.* `Cancel`
