@@ -124,6 +124,13 @@ pub fn maybe_self_replace(
 ///
 /// Both paths must be distinct (see [`same_file`]); the staging file lives
 /// next to `current` so the rename never crosses filesystems.
+///
+/// The staging path is predictable, so it is treated as attacker-influenced
+/// when the AppImage directory is shared: any existing entry is unlinked
+/// first (which removes a symlink instead of following it), the staging file
+/// is created with `create_new` and the mode is set on the open handle, so a
+/// planted symlink can never redirect the copy or the `chmod` into another
+/// file. The final rename replaces the directory entry itself.
 #[cfg(target_os = "linux")]
 pub(super) fn install_appimage_file(current: &Path, new_file: &Path) -> Result<(), UpdateError> {
     let staging_name = match current.file_name().and_then(|name| name.to_str()) {
@@ -139,13 +146,39 @@ pub(super) fn install_appimage_file(current: &Path, new_file: &Path) -> Result<(
         let _ = std::fs::remove_file(&staging);
         UpdateError::Io(reason)
     };
-    if let Err(error) = std::fs::copy(new_file, &staging) {
+    if let Err(error) = std::fs::remove_file(&staging)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(UpdateError::Io(format!(
+            "cannot clear the staging file {}: {error}",
+            staging.display()
+        )));
+    }
+    let mut output = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            return Err(UpdateError::Io(format!(
+                "cannot create the staging file {}: {error}",
+                staging.display()
+            )));
+        }
+    };
+    let copy_result =
+        std::fs::File::open(new_file).and_then(|mut input| std::io::copy(&mut input, &mut output));
+    if let Err(error) = copy_result {
+        drop(output);
         return Err(failed(error.to_string()));
     }
     #[cfg(unix)]
-    if let Err(error) = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)) {
+    if let Err(error) = output.set_permissions(std::fs::Permissions::from_mode(0o755)) {
+        drop(output);
         return Err(failed(error.to_string()));
     }
+    drop(output);
     if let Err(error) = std::fs::rename(&staging, current) {
         return Err(failed(error.to_string()));
     }
