@@ -26,6 +26,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   symlink; the opened handle is compared against the inspected inode, so a
   link planted in the shared temporary directory can no longer redirect
   panic text (or a chmod/truncate) into another file.
+- Viewer: replace the unbounded line-start vector with a checkpointed
+  `LineIndex` that keeps one offset per 1024 lines and scans forward on
+  demand. A part made only of newlines expands to as much as 256 MiB but
+  compresses to a few hundred KiB; the old index allocated 8 bytes per line
+  (up to ~2 GiB) on the UI thread, an infallible allocation failure that
+  aborts the process before the panic hook can run. The index is built lazily
+  (the global search no longer indexes every module it scans) and its
+  footprint is counted in the view-cache byte budget.
 
 ### Fixed
 

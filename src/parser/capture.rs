@@ -688,29 +688,6 @@ fn ascii_contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
         })
 }
 
-/// Line starts of `text` plus the longest line length in characters.
-///
-/// Line endings are excluded from the length, matching the width the reading
-/// surface reserves for its horizontal scroll area.
-#[must_use]
-pub fn compute_view(text: &str) -> (Vec<usize>, usize) {
-    let mut starts = vec![0];
-    for (offset, byte) in text.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(offset + 1);
-        }
-    }
-    let mut longest = 0;
-    for (row, &start) in starts.iter().enumerate() {
-        let end = starts.get(row + 1).copied().unwrap_or(text.len());
-        let raw = &text[start..end];
-        let line = raw.strip_suffix('\n').unwrap_or(raw);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        longest = longest.max(line.chars().count());
-    }
-    (starts, longest)
-}
-
 /// Next match row after `cursor`, stepping `step` (`+1` forward, `-1` back)
 /// with wraparound, mirroring the find-bar navigation.
 ///
@@ -884,14 +861,6 @@ mod tests {
         assert_eq!(filter_parts(&labels, "Ä"), [0]);
         assert_eq!(filter_parts(&labels, "banane"), [1]);
         assert_eq!(filter_parts(&labels, "apfel"), [2]);
-    }
-
-    #[test]
-    fn compute_view_indexes_lines_and_measures_width() {
-        let (starts, longest) = compute_view("a\r\nlonger line\nx");
-        assert_eq!(starts, [0, 3, 15]);
-        assert_eq!(longest, 11);
-        assert_eq!(compute_view(""), (vec![0], 0));
     }
 
     #[test]
