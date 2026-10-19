@@ -123,11 +123,13 @@ words are honest about this repository's current state:
   in the view-cache budget. Unit tests cover the pathological input, checkpoint
   boundaries and multibyte lines.
 
-- **Aggregate budget for `--extract --all`** — *candidate (security review).*
-  Expansion is capped per part (`max_part_bytes`, 256 MiB) but nothing
-  accumulates across parts, so a 512 MiB capture of highly compressible
-  modules can write hundreds of GiB to `--out`/`--stdout`. Add a cumulative
-  decompressed-output cap that fails closed.
+- **Aggregate budget for `--extract --all`** — *done.* `MAX_EXTRACT_BYTES` in
+  `src/cli.rs` caps the total expanded text of one run at 1 GiB, on top of the
+  256 MiB per-part `max_part_bytes` limit, so `--all` cannot turn a compressed
+  capture into hundreds of GiB of output. The first part that would cross the
+  cap is refused with an operational error (exit 1) before its output file is
+  created; earlier files or stdout output stay in place. Covered by the
+  `extract_budget_*` tests.
 
 - **CI: exercise the newest stable toolchain** — *candidate.* Every job
   currently compiles with 1.95 because `rust-toolchain.toml` takes precedence
