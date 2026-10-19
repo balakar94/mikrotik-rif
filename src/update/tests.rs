@@ -425,6 +425,72 @@ fn appimage_install_replaces_atomically() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn appimage_install_does_not_follow_a_planted_staging_symlink() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = scratch_dir();
+    let current = dir.join("mikrotik-rif.AppImage");
+    let new_file = dir.join("downloaded.AppImage");
+    let victim = dir.join("victim.txt");
+    let staging = dir.join("mikrotik-rif.AppImage.update");
+    std::fs::write(&current, b"old-bytes").expect("write current");
+    std::fs::write(&new_file, b"new-bytes").expect("write new");
+    std::fs::write(&victim, b"important user data").expect("write victim");
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600))
+        .expect("chmod victim");
+    std::os::unix::fs::symlink(&victim, &staging).expect("plant the staging symlink");
+
+    install_appimage_file(&current, &new_file).expect("replace");
+
+    assert_eq!(
+        std::fs::read(&victim).expect("read victim"),
+        b"important user data",
+        "the copy must not go through the planted symlink"
+    );
+    assert_eq!(
+        std::fs::metadata(&victim)
+            .expect("victim metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+        "the chmod must not follow the planted symlink"
+    );
+    assert_eq!(std::fs::read(&current).expect("read current"), b"new-bytes");
+    assert!(
+        std::fs::symlink_metadata(&staging).is_err(),
+        "the staging entry is consumed by the rename"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn appimage_install_refuses_a_staging_directory() {
+    let dir = scratch_dir();
+    let current = dir.join("mikrotik-rif.AppImage");
+    let new_file = dir.join("downloaded.AppImage");
+    let staging = dir.join("mikrotik-rif.AppImage.update");
+    std::fs::write(&current, b"old-bytes").expect("write current");
+    std::fs::write(&new_file, b"new-bytes").expect("write new");
+    std::fs::create_dir(&staging).expect("create the staging directory");
+
+    assert!(
+        install_appimage_file(&current, &new_file).is_err(),
+        "a directory at the staging path fails closed"
+    );
+    assert_eq!(
+        std::fs::read(&current).expect("read current"),
+        b"old-bytes",
+        "the running image is untouched"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn only_https_github_urls_are_allowed() {
     for url in [
         "https://github.com/balakar94/mikrotik-rif/releases/download/v1/x.deb",

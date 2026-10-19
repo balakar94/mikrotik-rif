@@ -44,6 +44,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and hand it to the publishing job as an artifact. `cargo install` compiles
   and runs a third-party build script, so it no longer executes in the job
   that holds the write token, the OIDC grant and `MINISIGN_SECRET_KEY`.
+- Updater (Linux AppImage): the staging path `<AppImage>.update` is
+  predictable, so `install_appimage_file` no longer copies through an
+  existing entry. It unlinks it first (removing a symlink instead of
+  following it), creates the staging file with `create_new`, copies into the
+  open handle and applies `0o755` to that handle before the rename. A local
+  user who could write to the AppImage directory could otherwise pre-plant a
+  symlink so the next in-app update overwrote and chmodded an arbitrary
+  user-writable file (e.g. `~/.bashrc`) and left the launcher pointing at it.
+  Covered by `appimage_install_does_not_follow_a_planted_staging_symlink` and
+  `appimage_install_refuses_a_staging_directory` on Linux.
 
 ### Fixed
 
