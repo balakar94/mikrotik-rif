@@ -848,8 +848,10 @@ mod tests {
         assert_eq!(filter_parts(&labels, ""), [0, 1, 2]);
         assert_eq!(filter_parts(&labels, "  EXPORT "), [0, 2]);
         assert_eq!(filter_parts(&labels, "other"), [1]);
-        assert!(filter_parts(&labels, "missing").is_empty());
-        assert!(filter_parts(&[], "x").is_empty());
+        let missing = filter_parts(&labels, "missing");
+        assert!(missing.is_empty(), "unexpected matches: {missing:?}");
+        let no_labels = filter_parts(&[], "x");
+        assert!(no_labels.is_empty(), "unexpected matches: {no_labels:?}");
     }
 
     #[test]

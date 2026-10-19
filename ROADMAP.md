@@ -129,12 +129,11 @@ words are honest about this repository's current state:
   modules can write hundreds of GiB to `--out`/`--stdout`. Add a cumulative
   decompressed-output cap that fails closed.
 
-- **CI: exercise the newest stable toolchain** — *candidate.* Every job
-  currently compiles with 1.95 because `rust-toolchain.toml` takes precedence
-  over the toolchain installed by the action, so the `test` matrix repeats the
-  MSRV build instead of catching newer-stable breakage. Setting
-  `RUSTUP_TOOLCHAIN: stable` (or a matrix-specific override) in the `test` job
-  would make the matrix meaningful while keeping `msrv` on `+1.95`.
+- **CI: exercise the newest stable toolchain** — *done.* The `test` job sets
+  `RUSTUP_TOOLCHAIN: stable`, so the 3-OS matrix compiles and tests with the
+  newest stable instead of repeating the MSRV build, while
+  `rust-toolchain.toml` still pins 1.95 for local development and the `msrv`
+  job keeps the 1.95 compile gate plus the pinned-toolchain rustfmt check.
 
 - **AppImage host integration** for double-click `.rif` — *host-dependent.* The
   portable image carries the desktop entry and MIME XML but does not install

@@ -25,6 +25,12 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # `rust-toolchain.toml` pins 1.95 for local development and takes
+    # precedence over the toolchain installed by the action, so override it
+    # here: the matrix must exercise the newest stable instead of repeating
+    # the MSRV build. The `msrv` job owns the 1.95 gate and formatting.
+    env:
+      RUSTUP_TOOLCHAIN: stable
     strategy:
       # A failure on one OS must not hide failures on the others.
       fail-fast: false
@@ -38,7 +44,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # eframe 0.36 pulls winit (x11 + wayland backends) and wgpu (Vulkan
+      # eframe 0.37 pulls winit (x11 + wayland backends) and wgpu (Vulkan
       # backend) on Linux. These -dev packages provide the pkg-config/headers
       # those crates build against. Verified against:
       #   - eframe/egui Linux prerequisites:
@@ -77,15 +83,10 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-
-      # Formatting is OS-independent; run it exactly once.
-      - name: Check formatting
-        if: runner.os == 'Linux'
-        run: cargo fmt --all --check
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets --locked -- -D warnings
@@ -138,6 +139,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
           toolchain: "1.95"
+          components: rustfmt
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -145,12 +147,16 @@ jobs:
           key: msrv-1.95
 
       # MSRV gate: the crate declares `rust-version = "1.95"` in Cargo.toml
-      # (the minimum the egui 0.36.2 tree builds with). rust-toolchain.toml
-      # pins channel 1.95, so every job here compiles with 1.95 too: the
-      # `test` matrix currently repeats the MSRV build rather than exercising
-      # newer stable releases (see ROADMAP: "CI: really test newest stable").
+      # (the minimum the egui 0.37 tree builds with). The `test` matrix runs
+      # the newest stable on three OSes; this Linux job is the only MSRV gate.
+      # Formatting lives here, not in the matrix: `rust-toolchain.toml` pins
+      # channel 1.95 for local development, and rustfmt style must stay tied to
+      # that pinned toolchain rather than drifting with newer stable rustfmt.
       - name: Check MSRV
         run: cargo +1.95 check --locked
+
+      - name: Check formatting (pinned toolchain)
+        run: cargo +1.95 fmt --all --check
 
   package:
     name: cargo package list (Linux)

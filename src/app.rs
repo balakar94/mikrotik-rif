@@ -1381,7 +1381,7 @@ mod tests {
     fn idle_global_search_is_not_scanning() {
         let search = GlobalSearch::idle();
         assert!(!search.is_scanning());
-        assert!(search.needle.is_empty());
+        assert!(search.needle.is_empty(), "needle: {:?}", search.needle);
         assert!(search.hits.is_empty());
         assert!(search.pending.is_empty());
         assert!(search.in_flight.is_none());
