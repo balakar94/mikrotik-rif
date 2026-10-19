@@ -151,6 +151,25 @@ fn unknown_option_after_a_subcommand_is_a_usage_error() {
 }
 
 #[test]
+fn a_directory_is_not_a_capture() {
+    // `--list <dir>` must fail as an operational error instead of reaching
+    // `fs::read`, which on a FIFO or device can block or grow without bound.
+    let dir = TempDir::new("directory-input");
+    let output = cli(&[OsStr::new("--list"), dir.path().as_os_str()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr {}",
+        text(&output.stderr)
+    );
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("not a regular file"),
+        "a directory is refused with an explanation: {stderr:?}"
+    );
+}
+
+#[test]
 fn list_reports_every_part_and_marks_unreadable_ones() {
     let (_dir, path) = capture_file(
         "list",

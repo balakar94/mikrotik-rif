@@ -80,8 +80,12 @@ pub enum Event {
     Expanded {
         /// Index of the expanded part.
         index: usize,
-        /// Expanded text.
-        text: PartText,
+        /// Expanded text, shared with the worker-owned cache.
+        ///
+        /// This is an `Arc` that the cache also holds, so the event costs a
+        /// reference-count bump instead of a deep copy of a payload that can
+        /// reach [`CaptureLimits::max_part_bytes`](crate::parser::CaptureLimits::max_part_bytes).
+        text: Arc<PartText>,
     },
     /// One part could not be expanded.
     ExpandFailed {
@@ -606,10 +610,7 @@ fn expand_with_cache(
                 .store(cache.bytes(), Ordering::Relaxed);
             channels
                 .events
-                .send(Event::Expanded {
-                    index,
-                    text: Arc::unwrap_or_clone(text),
-                })
+                .send(Event::Expanded { index, text })
                 .is_ok()
         }
         Err(RifError::Cancelled) => channels
@@ -938,6 +939,10 @@ mod tests {
             | Event::ExpandCancelled { .. } => None,
         });
         assert_eq!(second, first, "a cache hit returns the same text");
+        assert!(
+            Arc::ptr_eq(&second.1, &first.1),
+            "a cache hit must hand back the cached Arc instead of copying the text"
+        );
         let after_second = worker.cache_stats();
         assert_eq!(after_second.hits, 1, "the second read is served from cache");
         assert_eq!(after_second.misses, 1, "no second inflation happened");

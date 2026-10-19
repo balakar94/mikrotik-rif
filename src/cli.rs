@@ -363,13 +363,24 @@ fn write_help<W: Write>(out: &mut W) -> Result<(), CliError> {
 /// that grows between the metadata check and the read is rejected again from
 /// the buffered length. The reason mirrors the worker's `TOO_LARGE_REASON`.
 fn load_capture(path: &Path) -> Result<Capture, CliError> {
-    if let Ok(metadata) = std::fs::metadata(path)
-        && metadata.len() > MAX_CAPTURE_BYTES
-    {
-        return Err(CliError::operational(format!(
-            "{} is not a readable capture: file too large (>512 MiB)",
-            path.display()
-        )));
+    if let Ok(metadata) = std::fs::metadata(path) {
+        // A directory, FIFO, or device is not a capture, and reading one can
+        // block forever or grow without bound (`/dev/zero` never ends), so the
+        // check covers the file type and not only the size. Symlinks are
+        // followed deliberately: `metadata` reports the target's type, which is
+        // what gets read.
+        if !metadata.is_file() {
+            return Err(CliError::operational(format!(
+                "{} is not a capture (not a regular file)",
+                path.display()
+            )));
+        }
+        if metadata.len() > MAX_CAPTURE_BYTES {
+            return Err(CliError::operational(format!(
+                "{} is not a readable capture: file too large (>512 MiB)",
+                path.display()
+            )));
+        }
     }
     let bytes = std::fs::read(path).map_err(|error| {
         CliError::operational(format!("cannot read {}: {error}", path.display()))

@@ -431,6 +431,10 @@ fn only_https_github_urls_are_allowed() {
         "https://api.github.com/repos/balakar94/mikrotik-rif/releases/latest",
         "https://objects.githubusercontent.com/github-production-release-asset/x",
         "https://release-assets.githubusercontent.com/github-production-release-asset/x",
+        // Host matching is ASCII case-insensitive, and the default port is
+        // allowed spelled out.
+        "https://GitHub.com/x",
+        "https://api.github.com:443/repos/x",
     ] {
         assert!(check_url(url).is_ok(), "{url} must be accepted");
     }
@@ -443,6 +447,12 @@ fn only_https_github_urls_are_allowed() {
         "https://raw.githubusercontent.com/x",
         "not a url",
         "",
+        // A port other than 443 reaches a different listener that merely
+        // shares the host name.
+        "https://github.com:8443/x",
+        "https://api.github.com:9999/repos/x",
+        // The authority confusion case: the real host is evil.example.com.
+        "https://github.com@evil.example.com/x",
     ] {
         assert!(
             matches!(check_url(url), Err(UpdateError::InvalidUrl(_))),
