@@ -106,8 +106,7 @@ pub fn icon_button_ext(
     }
     // Custom-painted button: expose a button role with the hint as its
     // accessible name (same pattern as the splash drop zone).
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hint.to_owned()));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, hint.to_owned()));
     response.on_hover_text(hint).clicked() && enabled
 }
 

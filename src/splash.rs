@@ -415,9 +415,8 @@ fn home_content(
     }
     // Expose the custom-painted zone to assistive tech with a button role
     // and the same visible title as its accessible name.
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, drop_title.clone())
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, drop_title.clone()));
     let drop_clicked = response.clicked();
     // Keyboard-accessible equivalent: a real button invoking the same file
     // picker. The painted zone stays untouched for pointer and drag-drop.

@@ -130,7 +130,7 @@ impl Viewer {
         let hint = self.settings_hint();
         let badge = self.update_available();
         let mut clicked = false;
-        egui::Area::new(egui::Id::new("settings-access"))
+        egui::Area::new(egui::Id::unique("settings-access"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 10.0))
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
@@ -164,7 +164,7 @@ impl Viewer {
             .inner_margin(egui::Margin::same(16));
 
         let mut close = false;
-        let response = egui::Modal::new(egui::Id::new("settings-modal"))
+        let response = egui::Modal::new(egui::Id::unique("settings-modal"))
             // Same black 45% scrim in both themes.
             .backdrop_color(Color32::from_black_alpha(115))
             .frame(frame)

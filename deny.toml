@@ -28,12 +28,13 @@ unsound = "all"
 # drop the entries that no longer fire; `unused-ignored-advisory` below warns
 # when an entry becomes stale.
 ignore = [
-    # ttf-parser 0.25.1 via owned_ttf_parser -> ab_glyph -> winit -> eframe 0.36.
+    # ttf-parser 0.25.1 via owned_ttf_parser -> ab_glyph -> sctk-adwaita ->
+    # winit (Linux Wayland window decorations) -> eframe 0.37.
     # No safe upgrade available; upstream alternative is skrifa, which requires
     # an eframe migration (requires Cargo.lock / dependency change).
     { id = "RUSTSEC-2026-0192", reason = "TODO(follow-up): ttf-parser unmaintained; track eframe migration to skrifa" },
     # zvariant / zbus_names / zvariant_derive 5.x via zbus 5 -> accesskit_unix
-    # (Linux AT-SPI accessibility) -> accesskit_winit -> egui-winit -> eframe 0.36.
+    # (Linux AT-SPI accessibility) -> accesskit_winit -> egui-winit -> eframe 0.37.
     # All three are informational "unmaintained" advisories with `patched = []`:
     # no release can ever satisfy them, and the whole 5.x line is affected
     # (zvariant 5.15.1 still depends on zvariant_derive 5.x). There is no zbus-6

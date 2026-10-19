@@ -269,7 +269,7 @@ impl Viewer {
                 let width = (ui.available_width() - reserve).max(80.0);
                 let response = ui.add(
                     TextEdit::singleline(&mut self.search_query)
-                        .id(egui::Id::new("global-search"))
+                        .id(egui::Id::unique("global-search"))
                         .frame(egui::Frame::NONE)
                         .hint_text(hint.as_str())
                         .desired_width(width)
@@ -863,7 +863,7 @@ fn file_chip(
     // tooltip (same pattern as the splash drop zone).
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             true,
             format!("{hint}\n{}", path.display()),
         )
@@ -929,7 +929,7 @@ fn search_field(
             let width = (ui.available_width() - reserve).max(80.0);
             let response = ui.add(
                 TextEdit::singleline(text)
-                    .id(egui::Id::new(id))
+                    .id(egui::Id::unique(id))
                     .frame(egui::Frame::NONE)
                     .hint_text(hint.to_owned())
                     .desired_width(width)

@@ -950,7 +950,7 @@ impl Viewer {
             return;
         }
         ui.memory_mut(|memory| {
-            memory.request_focus(egui::Id::new("module-filter"));
+            memory.request_focus(egui::Id::unique("module-filter"));
         });
     }
 
@@ -1074,7 +1074,7 @@ impl Viewer {
         let alpha = ((1.0 - elapsed / FADE_SECONDS) * 255.0).clamp(0.0, 255.0) as u8;
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            egui::Id::new("stage-fade"),
+            egui::Id::unique("stage-fade"),
         ));
         painter.rect_filled(
             ctx.content_rect(),
