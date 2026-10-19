@@ -19,7 +19,7 @@ cargo about generate about.hbs --output-file THIRD-PARTY-NOTICES.md --fail --fro
 ## Overview
 
 - Apache License 2.0 — 368 crate(s)
-- MIT License — 105 crate(s)
+- MIT License — 106 crate(s)
 - ISC License — 19 crate(s)
 - Unicode License v3 — 19 crate(s)
 - BSD 3-Clause "New" or "Revised" License — 3 crate(s)
@@ -8120,7 +8120,7 @@ limitations under the License.
 
 </details>
 
-### MIT License — 105 crate(s)
+### MIT License — 106 crate(s)
 
 Used by:
 
@@ -8159,10 +8159,11 @@ Used by:
 - `wayland-csd-frame 0.3.0` — https://github.com/rust-windowing/wayland-csd-frame
 - `zbus 5.13.2` — https://github.com/z-galaxy/zbus/
 - `zbus_macros 5.13.2` — https://github.com/z-galaxy/zbus/
-- `zbus_names 4.3.1` — https://github.com/z-galaxy/zbus/
-- `zbus_xml 5.1.0` — https://github.com/z-galaxy/zbus/
-- `zvariant 5.9.2` — https://github.com/z-galaxy/zbus/
-- `zvariant_derive 5.9.2` — https://github.com/z-galaxy/zbus/
+- `zbus_names 4.3.5` — https://github.com/z-galaxy/zbus/
+- `zbus_xml 5.2.1` — https://github.com/z-galaxy/zbus/
+- `zvariant 5.15.1` — https://github.com/z-galaxy/zbus/
+- `zvariant_derive 5.15.1` — https://github.com/z-galaxy/zbus/
+- `zcheapstr 1.1.0` — https://github.com/z-galaxy/zcheapstr/
 - `synstructure 0.13.2` — https://github.com/mystor/synstructure
 - `wayland-protocols 0.32.12` — https://github.com/smithay/wayland-rs
 - `fax 0.2.7` — https://github.com/pdf-rs/fax
@@ -8204,6 +8205,7 @@ Used by:
 - `zbus-lockstep 0.5.2` — https://github.com/luukvanderduim/zbus-lockstep
 - `zmij 1.0.23` — https://github.com/dtolnay/zmij
 - `zvariant_utils 3.3.0` — https://github.com/z-galaxy/zbus/
+- `zvariant_utils 4.2.0` — https://github.com/z-galaxy/zbus/
 - `winnow 0.7.15` — https://github.com/winnow-rs/winnow
 - `winnow 1.0.4` — https://github.com/winnow-rs/winnow
 - `tracing-core 0.1.36` — https://github.com/tokio-rs/tracing
@@ -8227,7 +8229,6 @@ Used by:
 - `harfrust 0.12.0` — https://github.com/harfbuzz/harfrust
 - `crunchy 0.2.4` — https://github.com/eira-fransham/crunchy
 - `open 5.4.4` — https://github.com/Byron/open-rs
-- `quick-xml 0.38.4` — https://github.com/tafia/quick-xml
 - `quick-xml 0.41.0` — https://github.com/tafia/quick-xml
 
 <details>
@@ -8675,6 +8676,36 @@ SOFTWARE.
 ---
 ````text
 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+````
+
+---
+````text
+Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated

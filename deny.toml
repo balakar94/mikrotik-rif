@@ -28,27 +28,23 @@ unsound = "all"
 # drop the entries that no longer fire; `unused-ignored-advisory` below warns
 # when an entry becomes stale.
 ignore = [
-    # quick-xml 0.38.4 via zbus_xml -> atspi -> accesskit -> eframe 0.36.
-    # Fix: `cargo update -p quick-xml` to >= 0.41.0 (requires Cargo.lock change).
-    { id = "RUSTSEC-2026-0194", reason = "TODO(follow-up): quadratic runtime in BytesStart::attributes duplicate check; upgrade quick-xml to >=0.41.0 via Cargo.lock" },
-    # Same crate/path as above (NsReader unbounded namespace allocation).
-    # Same fix as RUSTSEC-2026-0194.
-    { id = "RUSTSEC-2026-0195", reason = "TODO(follow-up): NsReader memory-exhaustion DoS; upgrade quick-xml to >=0.41.0 via Cargo.lock" },
     # ttf-parser 0.25.1 via owned_ttf_parser -> ab_glyph -> winit -> eframe 0.36.
     # No safe upgrade available; upstream alternative is skrifa, which requires
     # an eframe migration (requires Cargo.lock / dependency change).
     { id = "RUSTSEC-2026-0192", reason = "TODO(follow-up): ttf-parser unmaintained; track eframe migration to skrifa" },
-    # zvariant / zvariant_derive / zbus_names 5.x via zbus 5 -> accesskit_unix
+    # zvariant / zbus_names / zvariant_derive 5.x via zbus 5 -> accesskit_unix
     # (Linux AT-SPI accessibility) -> accesskit_winit -> egui-winit -> eframe 0.36.
-    # The 5.x line was superseded by zbus 6 ("no longer maintained as a
-    # standalone crate"): upstream folded the derive macros into zbus, and a
-    # safe upgrade needs eframe 0.37, which pulls accesskit_unix 0.24 (zbus 6).
-    # These crates are Linux-only, are not reachable from the parser/updater
-    # attack surface, and the app never formats their values. Do not extend
-    # these reasons to a non-Linux path.
-    { id = "RUSTSEC-2026-0370", reason = "TODO(follow-up): zbus_names 4.x unmaintained (Linux AT-SPI only); upgrade via eframe 0.37 / accesskit_unix 0.24" },
-    { id = "RUSTSEC-2026-0371", reason = "TODO(follow-up): zvariant 5.x unmaintained (Linux AT-SPI only); upgrade via eframe 0.37 / accesskit_unix 0.24" },
-    { id = "RUSTSEC-2026-0372", reason = "TODO(follow-up): zvariant_derive 5.x unmaintained (Linux AT-SPI only); upgrade via eframe 0.37 / accesskit_unix 0.24" },
+    # All three are informational "unmaintained" advisories with `patched = []`:
+    # no release can ever satisfy them, and the whole 5.x line is affected
+    # (zvariant 5.15.1 still depends on zvariant_derive 5.x). There is no zbus-6
+    # consumer to migrate to yet — accesskit_unix 0.24.0 (the newest, pulled by
+    # egui 0.37) still requires `zbus ^5.19` — so the only way out is a future
+    # accesskit/egui release that moves to zbus 6. Re-check on every accesskit
+    # or egui release; these crates are Linux-only, are not reachable from the
+    # parser or updater attack surface, and the app never formats their values.
+    { id = "RUSTSEC-2026-0370", reason = "TODO(follow-up): zvariant 5.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "TODO(follow-up): zbus_names 5.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
+    { id = "RUSTSEC-2026-0372", reason = "TODO(follow-up): zvariant_derive 5.x unmaintained, patched=[] (Linux AT-SPI only); re-check when accesskit_unix depends on zbus 6" },
 ]
 unused-ignored-advisory = "warn"
 
