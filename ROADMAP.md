@@ -132,7 +132,12 @@ words are honest about this repository's current state:
   capture into hundreds of GiB of output. The first part that would cross the
   cap is refused with an operational error (exit 1) before its output file is
   created; earlier files or stdout output stay in place. Covered by the
-  `extract_budget_*` tests.
+  `extract_budget_*` tests. A companion `MAX_EXTRACT_FILES` cap (10 000) bounds
+  inode usage, which bytes cannot: empty modules cost no expansion and would
+  otherwise create one file each up to `max_parts`. It is checked before the
+  destination is touched, so a refused run writes nothing; `--stdout` is
+  exempt. Covered by `extract_refuses_more_files_than_the_cap_without_writing_any`
+  and `extract_file_cap_*`.
 
 - **CI: exercise the newest stable toolchain** — *done.* The `test` job sets
   `RUSTUP_TOOLCHAIN: stable`, so the 3-OS matrix compiles and tests with the
