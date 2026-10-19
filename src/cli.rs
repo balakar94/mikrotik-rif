@@ -41,6 +41,18 @@ const EXIT_USAGE: i32 = 2;
 /// legitimate export; the limit is deliberately compiled in, not configurable.
 const MAX_EXTRACT_BYTES: usize = 1 << 30;
 
+/// Hard ceiling on the number of files one `--extract` run may create.
+///
+/// The byte budget above cannot bound inode and block usage: a crafted capture
+/// with [`CaptureLimits::max_parts`] empty modules expands to ~0 bytes but
+/// would still create one file per module (up to 100 000, ~400 MB of metadata
+/// and inodes on a 4 KiB-block filesystem) with no expansion cost to charge.
+/// Real supout captures carry hundreds of modules, so 10 000 is far above any
+/// legitimate `--all --out`. The count is checked before anything is written,
+/// so a refused run leaves the destination untouched. Compiled in on purpose,
+/// like the byte cap.
+const MAX_EXTRACT_FILES: usize = 10_000;
+
 /// Dispatch a headless command when one was requested.
 ///
 /// Returns `Some(exit_code)` when the process must terminate without starting
@@ -450,7 +462,8 @@ fn list<W: Write>(path: &Path, out: &mut W) -> Result<(), CliError> {
 /// Expand the selected modules into their destination, reporting written paths
 /// to `out` for the directory destinations.
 ///
-/// The total expanded output is bounded by [`MAX_EXTRACT_BYTES`].
+/// The total expanded output is bounded by [`MAX_EXTRACT_BYTES`] and the number
+/// of files by [`MAX_EXTRACT_FILES`].
 fn extract<W: Write>(request: &ExtractRequest, out: &mut W) -> Result<(), CliError> {
     extract_with_budget(request, out, MAX_EXTRACT_BYTES)
 }
@@ -465,19 +478,46 @@ fn extract_with_budget<W: Write>(
     out: &mut W,
     budget: usize,
 ) -> Result<(), CliError> {
+    extract_with_limits(request, out, budget, MAX_EXTRACT_FILES)
+}
+
+/// [`extract_with_budget`] with an explicit file-count cap, so tests can
+/// exercise the cap without a ten-thousand-part fixture.
+fn extract_with_limits<W: Write>(
+    request: &ExtractRequest,
+    out: &mut W,
+    budget: usize,
+    max_files: usize,
+) -> Result<(), CliError> {
     let capture = load_capture(&request.capture)?;
     let limits = CaptureLimits::default();
     let indices = selected_indices(&capture, &request.selection)?;
     match &request.destination {
         Destination::Stdout => extract_to_stdout(&capture, &indices, &limits, budget, out),
         Destination::Directory(directory) => {
+            check_file_count(indices.len(), max_files)?;
             extract_to_directory(&capture, &indices, &limits, budget, directory, out)
         }
         Destination::DefaultDirectory => {
             let directory = default_parts_directory(&request.capture)?;
+            check_file_count(indices.len(), max_files)?;
             extract_to_directory(&capture, &indices, &limits, budget, &directory, out)
         }
     }
+}
+
+/// Refuse a directory extraction that would create more than `max_files`.
+///
+/// Checked up front, before the destination is touched, so a refusal leaves no
+/// partial files behind. `--stdout` is exempt: it creates no files.
+fn check_file_count(count: usize, max_files: usize) -> Result<(), CliError> {
+    if count <= max_files {
+        return Ok(());
+    }
+    Err(CliError::operational(format!(
+        "refusing to write {count} files: one --extract run may create at most \
+         {max_files} files; nothing was written"
+    )))
 }
 
 /// Whether `next` more expanded bytes still fit under `budget`.
@@ -1315,6 +1355,59 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("1 GiB"), "{message}");
         assert!(message.contains("\"log\""), "{message}");
+    }
+
+    #[test]
+    fn extract_refuses_more_files_than_the_cap_without_writing_any() {
+        let (dir, path) = over_budget_capture();
+        let out_dir = dir.path().join("parts");
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Directory(out_dir.clone()),
+        };
+        let mut report = Vec::new();
+        let error = extract_with_limits(&request, &mut report, 1 << 20, 2)
+            .expect_err("three files exceed a two-file cap");
+        let message = error.to_string();
+        assert!(message.contains("at most 2 files"), "{message}");
+        assert!(
+            !out_dir.exists(),
+            "the cap is checked before the destination is touched"
+        );
+        assert!(report.is_empty(), "no path was reported");
+    }
+
+    #[test]
+    fn extract_file_cap_does_not_apply_to_stdout() {
+        let (_dir, path) = over_budget_capture();
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Stdout,
+        };
+        let mut output = Vec::new();
+        extract_with_limits(&request, &mut output, 1 << 20, 2).expect("stdout writes no files");
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("refused!"), "{text:?}");
+    }
+
+    #[test]
+    fn extract_file_cap_allows_exactly_the_limit() {
+        let (dir, path) = over_budget_capture();
+        let out_dir = dir.path().join("parts");
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Directory(out_dir.clone()),
+        };
+        extract_with_limits(&request, &mut Vec::new(), 1 << 20, 3)
+            .expect("three files fit a three-file cap");
+        assert_eq!(
+            std::fs::read_dir(&out_dir).unwrap().count(),
+            3,
+            "one file per module"
+        );
     }
 
     #[test]

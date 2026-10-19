@@ -41,6 +41,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--out`/`--stdout`. The cap fails closed: the first part that would cross
   it is refused with an operational error (exit 1) before its output file is
   created, while output already written stays in place.
+- CLI: `--extract --out` also caps the number of files one run may create
+  (`MAX_EXTRACT_FILES`, 10 000). The byte budget could not bound inode/block
+  usage: a crafted capture of 100 000 empty modules expands to about zero
+  bytes and still writes 100 000 files. The count is checked before the
+  destination is touched, so a refused run writes nothing and leaves no
+  partial directory behind; `--stdout` creates no files and is exempt.
 - Release: generate the CycloneDX SBOM in a dedicated `contents: read` job
   and hand it to the publishing job as an artifact. `cargo install` compiles
   and runs a third-party build script, so it no longer executes in the job
