@@ -29,8 +29,8 @@ thiserror = "2.0"
 # `persistence` is what makes eframe hand the app a `Storage` (and call
 # `App::save`): without it the theme, language and updater preferences are
 # never written to disk. It also persists the window geometry for free.
-eframe = { version = "0.36", features = ["persistence"] }
-egui = "0.36"
+eframe = { version = "0.37", features = ["persistence"] }
+egui = "0.37"
 rfd = "0.17"
 fluent-bundle = "0.16"
 unic-langid = "0.9"

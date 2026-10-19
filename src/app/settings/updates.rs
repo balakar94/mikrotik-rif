@@ -225,7 +225,7 @@ impl Viewer {
             .button(self.i18n.text("update-changelog").as_str())
             .clicked()
         {
-            let id = egui::Id::new("changelog-window");
+            let id = egui::Id::unique("changelog-window");
             ctx.memory_mut(|memory| {
                 let open = memory.data.get_temp::<bool>(id).unwrap_or(false);
                 memory.data.insert_temp(id, !open);
@@ -241,7 +241,7 @@ impl Viewer {
     /// network, always available. Visibility lives in egui temp memory, so
     /// no `Viewer` field is needed.
     pub(crate) fn changelog_window(&self, ctx: &egui::Context) {
-        let id = egui::Id::new("changelog-window");
+        let id = egui::Id::unique("changelog-window");
         let mut open = ctx.memory(|memory| memory.data.get_temp::<bool>(id).unwrap_or(false));
         if !open {
             return;
