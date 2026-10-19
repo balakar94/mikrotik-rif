@@ -34,6 +34,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   aborts the process before the panic hook can run. The index is built lazily
   (the global search no longer indexes every module it scans) and its
   footprint is counted in the view-cache byte budget.
+- CLI: `--extract` now enforces a 1 GiB aggregate cap on expanded output
+  (`MAX_EXTRACT_BYTES`), so `--all` over a 512 MiB capture of highly
+  compressible modules can no longer write hundreds of GiB to
+  `--out`/`--stdout`. The cap fails closed: the first part that would cross
+  it is refused with an operational error (exit 1) before its output file is
+  created, while output already written stays in place.
 
 ### Fixed
 

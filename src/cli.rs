@@ -30,6 +30,17 @@ const EXIT_FAILURE: i32 = 1;
 /// The command line itself was malformed.
 const EXIT_USAGE: i32 = 2;
 
+/// Hard ceiling on the total expanded text one `--extract` run may write.
+///
+/// Expansion is already capped per part by [`CaptureLimits::max_part_bytes`]
+/// (256 MiB by default), but nothing bounded the sum across parts: a 512 MiB
+/// capture of highly compressible modules could expand to hundreds of GiB and
+/// fill `--out` or flood `--stdout`. This aggregate budget covers the whole
+/// selection, `--all` included, and fails closed at the first part that would
+/// cross it. Real supout captures are tens of MiB, so 1 GiB is far above any
+/// legitimate export; the limit is deliberately compiled in, not configurable.
+const MAX_EXTRACT_BYTES: usize = 1 << 30;
+
 /// Dispatch a headless command when one was requested.
 ///
 /// Returns `Some(exit_code)` when the process must terminate without starting
@@ -438,20 +449,77 @@ fn list<W: Write>(path: &Path, out: &mut W) -> Result<(), CliError> {
 
 /// Expand the selected modules into their destination, reporting written paths
 /// to `out` for the directory destinations.
+///
+/// The total expanded output is bounded by [`MAX_EXTRACT_BYTES`].
 fn extract<W: Write>(request: &ExtractRequest, out: &mut W) -> Result<(), CliError> {
+    extract_with_budget(request, out, MAX_EXTRACT_BYTES)
+}
+
+/// Expand `request` into its destination while keeping the sum of the expanded
+/// parts at or below `budget` bytes.
+///
+/// The budget is a parameter only so tests can exercise the limit with small
+/// fixtures; [`extract`] always passes [`MAX_EXTRACT_BYTES`].
+fn extract_with_budget<W: Write>(
+    request: &ExtractRequest,
+    out: &mut W,
+    budget: usize,
+) -> Result<(), CliError> {
     let capture = load_capture(&request.capture)?;
     let limits = CaptureLimits::default();
     let indices = selected_indices(&capture, &request.selection)?;
     match &request.destination {
-        Destination::Stdout => extract_to_stdout(&capture, &indices, &limits, out),
+        Destination::Stdout => extract_to_stdout(&capture, &indices, &limits, budget, out),
         Destination::Directory(directory) => {
-            extract_to_directory(&capture, &indices, &limits, directory, out)
+            extract_to_directory(&capture, &indices, &limits, budget, directory, out)
         }
         Destination::DefaultDirectory => {
             let directory = default_parts_directory(&request.capture)?;
-            extract_to_directory(&capture, &indices, &limits, &directory, out)
+            extract_to_directory(&capture, &indices, &limits, budget, &directory, out)
         }
     }
+}
+
+/// Whether `next` more expanded bytes still fit under `budget`.
+///
+/// `checked_add` keeps a crafted part from wrapping the running total around.
+fn within_budget(total: usize, next: usize, budget: usize) -> bool {
+    total.checked_add(next).is_some_and(|sum| sum <= budget)
+}
+
+/// Render a byte count as a short binary-unit label for error messages.
+///
+/// Production always uses [`MAX_EXTRACT_BYTES`] ("1 GiB"), but tests exercise
+/// tiny budgets, so the message stays truthful instead of hard-coding the
+/// production label.
+fn describe_bytes(bytes: usize) -> String {
+    const KIB: usize = 1 << 10;
+    const MIB: usize = 1 << 20;
+    const GIB: usize = 1 << 30;
+    if bytes == 0 {
+        return "0 bytes".to_owned();
+    }
+    if bytes.is_multiple_of(GIB) {
+        format!("{} GiB", bytes / GIB)
+    } else if bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else if bytes.is_multiple_of(KIB) {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// Build the fail-closed error for a part that would exceed the aggregate cap.
+///
+/// `detail` says where the output already written by this run remains, so the
+/// operator knows the run left partial results behind.
+fn budget_exceeded(label: &str, budget: usize, detail: &str) -> CliError {
+    let cap = describe_bytes(budget);
+    CliError::operational(format!(
+        "refusing to expand module {label:?}: the extracted output would exceed \
+         the {cap} aggregate cap for one run; {detail}"
+    ))
 }
 
 /// Resolve the selection to a non-empty list of readable part indices.
@@ -499,18 +567,32 @@ fn selected_indices(capture: &Capture, selection: &Selection) -> Result<Vec<usiz
 /// The label in the header is untrusted capture input, so it is passed through
 /// [`escape_label`] to neutralise newlines and ANSI escapes that could forge
 /// headers or drive the terminal. The expanded body is written verbatim.
+///
+/// Only expanded body bytes count against `budget`; headers are framing, not
+/// module text. A part that would cross the budget is refused before its header
+/// is written, so the stream never starts a document it will not finish.
 fn extract_to_stdout<W: Write>(
     capture: &Capture,
     indices: &[usize],
     limits: &CaptureLimits,
+    budget: usize,
     out: &mut W,
 ) -> Result<(), CliError> {
     let with_headers = indices.len() > 1;
+    let mut total = 0_usize;
     for &index in indices {
         let part = &capture.parts()[index];
         let text = capture.read(index, limits).map_err(|error| {
             CliError::operational(format!("cannot expand module {:?}: {error}", part.label()))
         })?;
+        if !within_budget(total, text.text.len(), budget) {
+            return Err(budget_exceeded(
+                part.label(),
+                budget,
+                "earlier output was already written to stdout",
+            ));
+        }
+        total += text.text.len();
         // Two sequential writes keep the byte stream identical to the old
         // single `chunk` write while avoiding a second copy of the expanded
         // text (up to 256 MiB per part) in an intermediate `String`.
@@ -542,10 +624,15 @@ fn extract_to_stdout<W: Write>(
 /// followed. Only the final file path is checked: parent components of
 /// `directory` are created with `create_dir_all` and are not inspected for
 /// symlinks, so callers must pass a trustworthy destination.
+///
+/// A part that would cross `budget` is refused before its output file is
+/// created, so a failed run leaves no empty placeholder behind; files written
+/// for earlier parts remain.
 fn extract_to_directory<W: Write>(
     capture: &Capture,
     indices: &[usize],
     limits: &CaptureLimits,
+    budget: usize,
     directory: &Path,
     out: &mut W,
 ) -> Result<(), CliError> {
@@ -558,12 +645,21 @@ fn extract_to_directory<W: Write>(
 
     let mut used = HashSet::new();
     let mut stream = Stream::Open;
+    let mut total = 0_usize;
 
     for &index in indices {
         let part = &capture.parts()[index];
         let text = capture.read(index, limits).map_err(|error| {
             CliError::operational(format!("cannot expand module {:?}: {error}", part.label()))
         })?;
+        if !within_budget(total, text.text.len(), budget) {
+            return Err(budget_exceeded(
+                part.label(),
+                budget,
+                "earlier files remain in the destination directory",
+            ));
+        }
+        total += text.text.len();
         let mut stem = unique_stem(part.label(), &mut used);
         let path = loop {
             let candidate = directory.join(format!("{stem}.txt"));
@@ -1088,6 +1184,133 @@ mod tests {
         assert!(text.contains("hello\n"), "{text:?}");
         assert!(text.contains("===== beta [0] ====="), "{text:?}");
         assert!(text.contains("bye\n"), "{text:?}");
+    }
+
+    // ── Aggregate extract budget ─────────────────────────────────────────────
+
+    /// Two parts whose expanded bodies total exactly 16 bytes.
+    fn exact_budget_capture() -> (TempDir, PathBuf) {
+        capture_file(
+            "budget-exact",
+            &[
+                encode_part(b"alpha", b"aaaaaaaa"),
+                encode_part(b"beta", b"bbbbbbbb"),
+            ],
+        )
+    }
+
+    /// Three parts: the first two fill a 16-byte budget and the third would
+    /// cross it.
+    fn over_budget_capture() -> (TempDir, PathBuf) {
+        capture_file(
+            "budget-over",
+            &[
+                encode_part(b"alpha", b"aaaaaaaa"),
+                encode_part(b"beta", b"bbbbbbbb"),
+                encode_part(b"gamma", b"refused!"),
+            ],
+        )
+    }
+
+    #[test]
+    fn extract_budget_allows_a_selection_that_fits_exactly() {
+        let (dir, path) = exact_budget_capture();
+        let out_dir = dir.path().join("parts");
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Directory(out_dir.clone()),
+        };
+        let mut report = Vec::new();
+        extract_with_budget(&request, &mut report, 16).expect("a total of exactly 16 bytes fits");
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("alpha.txt")).unwrap(),
+            "aaaaaaaa"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("beta.txt")).unwrap(),
+            "bbbbbbbb"
+        );
+    }
+
+    #[test]
+    fn extract_budget_refuses_the_part_that_would_exceed_it() {
+        let (_dir, path) = over_budget_capture();
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Stdout,
+        };
+        let mut output = Vec::new();
+        let error = extract_with_budget(&request, &mut output, 16)
+            .expect_err("the third part must be refused");
+        let message = error.to_string();
+        assert!(message.contains("16 bytes"), "{message}");
+        assert!(message.contains("aggregate cap"), "{message}");
+        assert!(message.contains("already written to stdout"), "{message}");
+        // The refused part was never expanded into the stream.
+        assert!(!String::from_utf8(output).unwrap().contains("refused!"));
+    }
+
+    #[test]
+    fn extract_budget_stops_before_creating_the_refused_file() {
+        let (dir, path) = over_budget_capture();
+        let out_dir = dir.path().join("parts");
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Directory(out_dir.clone()),
+        };
+        let mut report = Vec::new();
+        let error = extract_with_budget(&request, &mut report, 16)
+            .expect_err("the third part must be refused");
+        assert!(
+            error.to_string().contains("earlier files remain"),
+            "{error}"
+        );
+        // Earlier files stay; the refused part leaves no empty placeholder.
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("alpha.txt")).unwrap(),
+            "aaaaaaaa"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out_dir.join("beta.txt")).unwrap(),
+            "bbbbbbbb"
+        );
+        assert!(
+            !out_dir.join("gamma.txt").exists(),
+            "the refused part must not create a file"
+        );
+    }
+
+    #[test]
+    fn extract_budget_stops_stdout_at_the_cap() {
+        let (_dir, path) = over_budget_capture();
+        let request = ExtractRequest {
+            capture: path,
+            selection: Selection::All,
+            destination: Destination::Stdout,
+        };
+        let mut output = Vec::new();
+        let _error = extract_with_budget(&request, &mut output, 16).expect_err("budget exceeded");
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("aaaaaaaa"), "{text:?}");
+        assert!(text.contains("bbbbbbbb"), "{text:?}");
+        assert!(!text.contains("refused!"), "{text:?}");
+        // The refused part must not even get a header.
+        assert!(!text.contains("===== gamma"), "{text:?}");
+    }
+
+    #[test]
+    fn extract_budget_message_names_the_production_cap() {
+        let error = budget_exceeded(
+            "log",
+            MAX_EXTRACT_BYTES,
+            "earlier output was already written to stdout",
+        );
+        let message = error.to_string();
+        assert!(message.contains("1 GiB"), "{message}");
+        assert!(message.contains("\"log\""), "{message}");
     }
 
     #[test]
