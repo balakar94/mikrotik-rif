@@ -114,8 +114,8 @@ impl Viewer {
     /// Tooltip for the settings gear, mentioning a pending update when there is
     /// one.
     pub(crate) fn settings_hint(&self) -> String {
-        match self.update_version() {
-            Some(version) if self.update_available() => {
+        match self.updater.version() {
+            Some(version) if self.updater.available() => {
                 let mut args = FluentArgs::new();
                 args.set("version", version.to_owned());
                 self.i18n.render("button-settings-update", &args)
@@ -128,7 +128,7 @@ impl Viewer {
     pub(crate) fn settings_access(&mut self, ctx: &egui::Context) {
         let palette = theme::current(ctx);
         let hint = self.settings_hint();
-        let badge = self.update_available();
+        let badge = self.updater.available();
         let mut clicked = false;
         egui::Area::new(egui::Id::unique("settings-access"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 10.0))

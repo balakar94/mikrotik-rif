@@ -24,14 +24,14 @@ use fluent_bundle::FluentArgs;
 
 use crate::i18n::I18n;
 use crate::parser::{Capture, CaptureLimits, LineIndex, Part, PartText, filter_parts, next_match};
-use crate::update::{self, ReleaseInfo};
+use crate::update;
 
 use crate::splash::{self, ScanView};
 use crate::theme::{self, Palette};
 use crate::worker::{Event, Worker};
 
 use self::settings::SettingsTab;
-use self::update_ui::{CheckState, DownloadState};
+use self::update_ui::Updater;
 use self::workspace::{
     FindState, find_case_insensitive, human_size_u64, sanitize, to_number, units,
 };
@@ -306,31 +306,8 @@ pub struct Viewer {
     github_texture: Option<egui::TextureHandle>,
 
     // In-app updater (the only network path; see `crate::update`).
-    /// Daily automatic checks enabled (persisted).
-    update_auto: bool,
-    /// Last completed check in Unix seconds (persisted).
-    update_last_check: Option<u64>,
-    /// Release tag the user chose to skip (persisted).
-    update_skipped: String,
-    /// Latest release newer than the running app, if one was found.
-    update_release: Option<ReleaseInfo>,
-    /// Verified installer waiting for the handoff, with the SHA-256 digest it
-    /// was verified against (re-checked immediately before use).
-    update_ready: Option<(PathBuf, String)>,
-    /// Last update failure to show (manual checks and downloads only).
-    update_error: Option<String>,
-    /// Whether the last completed check found the app up to date (`None` while
-    /// a check runs, after a failure, or before the first one ever runs).
-    update_up_to_date: Option<bool>,
-    /// ETag of the last release-metadata response (persisted), so a repeated
-    /// check can answer `304` instead of consuming the API rate limit.
-    update_etag: Option<String>,
-    /// Background check state machine (at most one check runs at a time).
-    check: CheckState,
-    /// Background download state machine.
-    download: DownloadState,
-    /// Download progress: bytes written and advertised total, if known.
-    update_download: Option<(u64, Option<u64>)>,
+    /// Displayed state and background job handles; see [`Updater`].
+    updater: Updater,
 }
 
 impl Viewer {
@@ -380,30 +357,21 @@ impl Viewer {
             language: String::new(),
             settings: None,
             github_texture: None,
-            update_auto: true,
-            update_last_check: None,
-            update_skipped: String::new(),
-            update_release: None,
-            update_ready: None,
-            update_error: None,
-            update_up_to_date: None,
-            update_etag: None,
-            check: CheckState::Idle,
-            download: DownloadState::Idle,
-            update_download: None,
+            updater: Updater::default(),
         };
 
         viewer.restore_prefs(cc.storage, &cc.egui_ctx);
         // Discard a corrupt persisted ETag instead of sending it to the network.
-        viewer.update_etag = viewer
-            .update_etag
+        viewer.updater.etag = viewer
+            .updater
+            .etag
             .take()
             .and_then(|value| sanitize_etag_value(&value));
 
         if let Some(argument) = std::env::args_os().nth(1) {
             viewer.start_scan(PathBuf::from(argument));
         }
-        if update::should_auto_check(viewer.update_auto) {
+        if update::should_auto_check(viewer.updater.auto) {
             viewer.start_check(false);
         }
         viewer
@@ -1196,15 +1164,15 @@ impl Viewer {
 
 impl eframe::App for Viewer {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        let auto = if self.update_auto { "1" } else { "0" };
+        let auto = if self.updater.auto { "1" } else { "0" };
         storage.set_string(UPDATE_AUTO_KEY, auto.to_owned());
-        if let Some(last) = self.update_last_check {
+        if let Some(last) = self.updater.last_check {
             storage.set_string(UPDATE_LAST_KEY, last.to_string());
         }
-        storage.set_string(UPDATE_SKIPPED_KEY, self.update_skipped.clone());
+        storage.set_string(UPDATE_SKIPPED_KEY, self.updater.skipped.clone());
         storage.set_string(
             UPDATE_ETAG_KEY,
-            self.update_etag.clone().unwrap_or_default(),
+            self.updater.etag.clone().unwrap_or_default(),
         );
         storage.set_string(
             THEME_KEY,
@@ -1216,7 +1184,7 @@ impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.last_time = ui.input(|input| input.time);
         self.drain();
-        self.poll_update();
+        self.updater.poll();
         self.handle_dropped(ui.ctx());
         // The settings modal consumes its own keys (Esc closes it); letting the
         // workspace shortcuts run underneath would close two things at once.
@@ -1246,8 +1214,8 @@ impl eframe::App for Viewer {
             || self.busy.is_some()
             || self.stage == Stage::Scanning
             || self.search.as_ref().is_some_and(GlobalSearch::is_scanning)
-            || !matches!(self.check, CheckState::Idle)
-            || !matches!(self.download, DownloadState::Idle)
+            || self.updater.is_checking()
+            || self.updater.is_downloading()
         {
             ui.ctx().request_repaint();
         }
