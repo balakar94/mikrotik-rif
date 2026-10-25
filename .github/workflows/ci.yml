@@ -86,7 +86,7 @@ jobs:
           components: clippy
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets --locked -- -D warnings
@@ -142,7 +142,7 @@ jobs:
           components: rustfmt
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: msrv-1.95
 
@@ -199,7 +199,7 @@ jobs:
           toolchain: stable
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # Pinned `cargo install` instead of a third-party cargo-deny action:
       # no extra action attack surface beyond the already-trusted (SHA-pinned)
