@@ -9724,7 +9724,7 @@ Used by:
 - `ring 0.17.14` — https://github.com/briansmith/ring
 - `ring 0.17.14` — https://github.com/briansmith/ring
 - `libloading 0.8.9` — https://github.com/nagisa/rust_libloading/
-- `rustls-webpki 0.103.15` — https://github.com/rustls/webpki
+- `rustls-webpki 0.103.16` — https://github.com/rustls/webpki
 
 <details>
 <summary>Full licence text (SPDX: ISC License)</summary>
@@ -10537,7 +10537,7 @@ the following restrictions:
 Used by:
 
 - `error-code 3.4.0` — https://github.com/DoumanAsh/error-code
-- `clipboard-win 5.4.1` — https://github.com/DoumanAsh/clipboard-win
+- `clipboard-win 5.4.3` — https://github.com/DoumanAsh/clipboard-win
 
 <details>
 <summary>Full licence text (SPDX: Boost Software License 1.0)</summary>
