@@ -126,7 +126,8 @@ Everything below is post-1.0 work: none of it blocks the release, and the
   scan** (gitleaks) — *done since 0.4.0.* Lower severities are surfaced as
   annotations for triage but do not block CI; the tree carries known pedantic
   hygiene findings (matrix expansions in build scripts, artifact credential
-  persistence, dependabot cooldown).
+  persistence). Dependabot was removed in 2026-10: dependency freshness is
+  handled manually (advisories stay gated by the `cargo-deny` job).
 
 - **Updater UI state-machine tests** — *done.* The check and download state,
   plus the `poll` transitions that decide what Settings shows, live in the

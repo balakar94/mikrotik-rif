@@ -51,7 +51,7 @@ Used by:
 - `polycool 0.4.0` — https://github.com/linebender/kurbo
 - `raw-window-metal 1.1.0` — https://github.com/rust-windowing/raw-window-metal
 - `static_assertions 1.1.0` — https://github.com/nvzqz/static-assertions-rs
-- `ureq-proto 0.6.4` — https://github.com/algesten/ureq-proto
+- `ureq-proto 0.6.5` — https://github.com/algesten/ureq-proto
 - `utf8_iter 1.0.4` — https://github.com/hsivonen/utf8_iter
 - `x11rb-protocol 0.13.2` — https://github.com/psychon/x11rb
 - `x11rb 0.13.2` — https://github.com/psychon/x11rb
@@ -109,7 +109,7 @@ Used by:
 - `self_cell 1.3.0` — https://github.com/Voultapher/self_cell
 - `sys-locale 0.3.2` — https://github.com/1Password/sys-locale
 - `unarray 0.1.4` — https://github.com/cameron1024/unarray
-- `ureq 3.4.2` — https://github.com/algesten/ureq
+- `ureq 3.5.0` — https://github.com/algesten/ureq
 - `zune-core 0.5.3` — https://github.com/etemesi254/zune-image
 - `zune-jpeg 0.5.15` — https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg
 - `fluent-bundle 0.16.0` — https://github.com/projectfluent/fluent-rs
@@ -8243,7 +8243,7 @@ Used by:
 - `crunchy 0.2.4` — https://github.com/eira-fransham/crunchy
 - `yeslogic-fontconfig-sys 6.0.1` — https://github.com/yeslogic/fontconfig-rs
 - `os_pipe 1.2.3` — https://github.com/oconnor663/os_pipe.rs
-- `open 5.4.4` — https://github.com/Byron/open-rs
+- `open 5.4.5` — https://github.com/Byron/open-rs
 - `quick-xml 0.41.0` — https://github.com/tafia/quick-xml
 
 <details>
@@ -10661,7 +10661,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- `webpki-roots 1.0.9` — https://github.com/rustls/webpki-roots
+- `webpki-roots 1.0.11` — https://github.com/rustls/webpki-roots
 
 <details>
 <summary>Full licence text (SPDX: Community Data License Agreement Permissive 2.0)</summary>
