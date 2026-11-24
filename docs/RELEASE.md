@@ -12,7 +12,7 @@ scheduled fuzz campaign.
 
 | Workflow | File | Trigger | Purpose |
 | --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | The whole pull-request gate: format, lint and test on Linux, macOS and Windows; the MSRV (1.95) compile plus the pinned-toolchain `rustfmt` check; `cargo-deny` (advisories, licences and sources); `cargo-semver-checks` against the `v1.0.0` tag for the 1.x library contract; the zizmor workflow audit and the gitleaks secret scan; fuzz-corpus verification and drift guards (notices, packaging maps, licence allow-lists). It does not build release binaries, package anything, or upload artifacts. |
+| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | The whole pull-request gate: format, lint and test on Linux, macOS and Windows; the MSRV (1.100.0) compile plus the pinned-toolchain `rustfmt` check; `cargo-deny` (advisories, licences and sources); `cargo-semver-checks` against the `v1.0.0` tag for the 1.x library contract; the zizmor workflow audit and the gitleaks secret scan; fuzz-corpus verification and drift guards (notices, packaging maps, licence allow-lists). It does not build release binaries, package anything, or upload artifacts. |
 | Build | `.github/workflows/build.yml` | `workflow_dispatch`, `workflow_call` | Build and package the native installers for all six runner/architecture combinations and upload them as workflow artifacts. It never publishes a release. |
 | Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Orchestration only: it calls `build.yml` (job `build`), generates the SBOM in an unprivileged `sbom` job, then — for `v*` tags and only then — downloads the artifacts, computes checksums, creates a **draft** GitHub Release, verifies the uploaded asset names and finally promotes the draft. |
 | Packaging smoke | `.github/workflows/packaging-smoke.yml` | weekly `schedule`, `workflow_dispatch` | Calls `build.yml` outside tags so a packaging regression (like the v0.1.0 WiX failure) is caught before release week. It never publishes. |
@@ -206,7 +206,7 @@ uploads it. The release job downloads it into `dist/` before the manifest, so
 it is covered by `SHA256SUMS.txt` and by the build-provenance attestation
 (`actions/attest-build-provenance`, `subject-path: dist/*`).
 
-Reproducibility notes: `rust-toolchain.toml` pins Rust 1.95 (the crate
+Reproducibility notes: `rust-toolchain.toml` pins Rust 1.100.0 (the crate
 `rust-version` / MSRV); `build.yml` passes `MIKROTIK_RIF_COMMIT: ${{
 github.sha }}` into `cargo build --release --locked` so the baked-in commit is
 exact even without `.git`; runner labels are pinned (`ubuntu-24.04`,

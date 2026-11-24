@@ -31,7 +31,7 @@ the fuzzer spends its budget on error paths instead of large allocations.
 
 `cargo fuzz` needs a **nightly** toolchain: it adds `-Zsanitizer=address` and
 the sanitizer-coverage pass flags, which stable rustc rejects. The repository
-pins **stable 1.95** in `rust-toolchain.toml`, so run the nightly override
+pins **stable 1.100.0** in `rust-toolchain.toml`, so run the nightly override
 explicitly with `cargo +nightly`.
 
 ```sh

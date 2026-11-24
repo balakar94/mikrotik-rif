@@ -151,7 +151,7 @@ mod tests {
         let label = "🚀".repeat(64);
         let sanitized = sanitize(&label);
         assert!(sanitized.len() <= 120, "{} bytes", sanitized.len());
-        assert!(!sanitized.is_empty());
+        assert_ne!(sanitized, "");
         assert!(sanitized.is_char_boundary(sanitized.len()));
     }
 

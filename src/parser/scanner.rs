@@ -429,7 +429,7 @@ mod tests {
             &Cancel::default(),
         )
         .expect("stray closes must not abort");
-        assert!(report.spans.is_empty());
+        assert_eq!(report.spans.len(), 0, "stray closes produce no spans");
         assert_eq!(notes.len(), MAX_NOTES, "retained notes are capped");
         assert_eq!(
             report.notes_total, 1500,

@@ -1341,7 +1341,7 @@ mod tests {
         assert_eq!(capture.filter_indices(""), [0, 1, 2]);
         assert_eq!(capture.filter_indices("  FIRE "), [0, 2]);
         assert_eq!(capture.filter_indices("log"), [1]);
-        assert!(capture.filter_indices("missing").is_empty());
+        assert_eq!(capture.filter_indices("missing").len(), 0);
     }
 
     #[test]

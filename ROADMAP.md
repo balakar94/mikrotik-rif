@@ -184,11 +184,10 @@ Everything below is post-1.0 work: none of it blocks the release, and the
   exempt. Covered by `extract_refuses_more_files_than_the_cap_without_writing_any`
   and `extract_file_cap_*`.
 
-- **CI: exercise the newest stable toolchain** — *done.* The `test` job sets
-  `RUSTUP_TOOLCHAIN: stable`, so the 3-OS matrix compiles and tests with the
-  newest stable instead of repeating the MSRV build, while
-  `rust-toolchain.toml` still pins 1.95 for local development and the `msrv`
-  job keeps the 1.95 compile gate plus the pinned-toolchain rustfmt check.
+- **CI: pin Rust 1.100.0 everywhere** — *done.* `rust-toolchain.toml`,
+  `Cargo.toml` (`rust-version`) and every CI/release job use 1.100.0, so the
+  3-OS test matrix, the MSRV compile gate, formatting, packaging and local
+  builds all exercise the same toolchain.
 
 - **AppImage host integration** for double-click `.rif` — *host-dependent.* The
   portable image carries the desktop entry and MIME XML but does not install

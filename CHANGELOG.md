@@ -4,6 +4,77 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-24
+
+### Security
+
+- Dependencies: `rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486, unsound
+  zero-length xattr buffer), `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack
+  overflow in `Url::origin()` on nested `blob:` URLs) and `async-executor`
+  1.14.0 → 1.14.1 (yanked release). `cargo deny check advisories licenses
+  sources` is clean, and `THIRD-PARTY-NOTICES.md` was regenerated.
+- Parser: part labels are capped at a new `MAX_LABEL_BYTES` (4 KiB). A
+  malicious capture could previously declare multi-megabyte labels that were
+  retained and cloned into the index, the duplicate map and the viewer's filter
+  mirror — enough to turn a 512 MiB file into gigabytes of RSS and make every
+  filter keystroke walk them. Oversized labels now flag that part as unreadable
+  and leave the rest of the capture usable. Labels are stored once behind an
+  `Arc<str>`, and the viewer no longer keeps a second `Vec<String>` copy.
+- CLI: `--stdout` now replaces C0/C1 control characters other than tab, CR and
+  LF with `?` when writing to a live terminal, so a hostile module cannot emit
+  ANSI/OSC sequences (clipboard writes, fake prompts, screen clears). Pipes and
+  redirections stay byte-exact; `--force-raw` opts out on a terminal.
+- CLI: sanitised file names are capped on both characters (64) and UTF-8 bytes
+  (120), so a label made of four-byte characters can no longer exceed common
+  filesystem component limits and abort `--extract --all` midway. Bidi and
+  zero-width format characters are neutralised in file names and terminal
+  labels.
+- Panic log: on Unix, an oversized existing log is shortened with `set_len`
+  only after the opened handle's device/inode matches the inspected entry.
+  Previously the reopen used `truncate` before the identity check, so a link
+  swapped in during that window could have truncated its target.
+- Parser: `Debug` for `Part`, `PartText` and `PartCache` no longer prints the
+  decoded payload, so a debug print cannot dump capture text or credentials.
+
+### Added
+
+- CLI: `--version` / `-V`, and `--list --json` with a versioned
+  `{ "schema": 1, "parts": [...] }` document. Each part carries `index` (its
+  position, unlike the TSV's duplicate ordinal), `label`, `ordinal`,
+  `compressed_bytes`, `readable` and `fault`.
+- Viewer: a global-search hit now remembers its first matching line; selecting
+  the hit jumps there and seeds the in-module highlight instead of requiring a
+  second search. Empty modules and dot-prefixed RouterOS internals are labelled,
+  each module remembers its scroll position, and the module filter is cleared
+  when a new capture is opened.
+- Parser: `Capture::notes_total()` reports every structural oddity seen,
+  including those beyond the retained-notes cap, so the banner no longer reports
+  a flood as exactly 1000. `Capture::filter_indices()` filters without a label
+  mirror, and `line_of_offset` maps a match offset to its row.
+- Distribution: Intel macOS (`macos-15-intel`) builds an `_amd64.dmg`, and the
+  updater selects the DMG by architecture marker instead of assuming a single
+  Apple Silicon image.
+- `PRIVACY.md` documents the only network request and all local state;
+  `SECURITY.md` documents private vulnerability reporting and the threat model.
+  The Updates tab states what the automatic check sends.
+
+### Changed
+
+- Release: builds run under one `concurrency` group, the tag must be an ancestor
+  of `main`, and a release is created as a draft, verified against
+  `SHA256SUMS.txt`, then promoted with `--latest`.
+- CI: the MSRV gate now checks `--all-targets`; `cargo-deny` also enforces
+  `[sources]` (crates.io only); `cargo-semver-checks` gates the published 1.x
+  library surface against the `v1.0.0` tag. The RPM package declares its SPDX
+  licence expression.
+- Toolchain: pinned Rust **1.100.0** in `rust-toolchain.toml`, `Cargo.toml`
+  (`rust-version`) and every CI/release job, so local builds, the 3-OS matrix,
+  the MSRV/formatting gate, packaging and fuzz tooling use one version.
+- Docs: the Linux glibc 2.39 floor (Ubuntu 24.04+, Debian 13+, Fedora 40+,
+  RHEL 10+) is stated explicitly; the false "writes nothing to disk" claim and
+  the "notarization via CI secrets" claim were corrected; build-provenance
+  attestations are marked done in the roadmap.
+
 ## [1.0.0] - 2026-10-19
 
 ### Security

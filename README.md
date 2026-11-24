@@ -225,7 +225,7 @@ The gear in the top bar (and on the welcome and home screens), or
 
 ## Requirements
 
-- Rust 1.95 or newer (edition 2024) to build.
+- Rust 1.100.0 or newer (edition 2024) to build.
 - A Vulkan/Metal/DX12-capable GPU for the default eframe `wgpu` renderer.
 - No runtime dependencies beyond the bundled fonts. On Linux, a desktop with
   X11 or Wayland plus glibc 2.39 or newer (see [Install](#install)).
