@@ -48,6 +48,19 @@ jobs:
             artifact: release-macos-arm64
             files: |
               dist/*.dmg
+          # Intel Mac (x86_64). `macos-15-intel` is a current standard
+          # GitHub-hosted runner label; GitHub's runner-images support policy
+          # lists it as available through 2027, not permanently. Revisit the
+          # label before then (a newer `macos-*-intel` label, or drop the leg).
+          # The artifact name is arch-specific, so this and the arm64 leg can
+          # both upload `dist/*.dmg` without colliding in the release job.
+          - name: macos x64
+            os: macos-15-intel
+            arch: x64
+            formats: "dmg"
+            artifact: release-macos-x64
+            files: |
+              dist/*.dmg
           - name: linux x64
             os: ubuntu-24.04
             arch: x64
@@ -85,8 +98,11 @@ jobs:
               dist/*.AppImage
               dist/*.rpm
     steps:
+      # No job in this workflow pushes; don't leave the token in .git/config.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # eframe 0.37 builds winit (x11 + wayland) and wgpu (Vulkan) on Linux.
       # rfd 0.17.2 defaults to xdg-portal + wayland, so GTK3 is not needed;

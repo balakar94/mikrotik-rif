@@ -40,7 +40,8 @@
 //! | --- | --- | --- |
 //! | `windows` | `x86_64` | name ends with `-setup.exe` and contains `_amd64` |
 //! | `windows` | `aarch64` | name ends with `-setup.exe` and contains `_arm64` |
-//! | `macos` | `aarch64` | name ends with `.dmg` (only Apple Silicon is shipped, and exactly one `.dmg` per release; a second one would need an architecture marker here) |
+//! | `macos` | `aarch64` | name ends with `.dmg` and contains `_arm64` |
+//! | `macos` | `x86_64` | name ends with `.dmg` and contains `_amd64` |
 //! | `linux` | `x86_64` | `.deb` containing `_amd64`, else `.rpm` containing `_amd64`, else `.AppImage` containing `_amd64` |
 //! | `linux` | `aarch64` | `.deb` containing `_arm64`, else `.rpm` containing `_arm64`, else `.AppImage` containing `_arm64` |
 //! | anything else | anything else | no match — the updater opens the release page instead |
@@ -502,9 +503,9 @@ pub fn select_asset<'a>(assets: &'a [AssetInfo], os: &str, arch: &str) -> Option
     let marker = format!("_{token}");
     match (os, token) {
         ("windows", _) => assets.iter().find(|asset| is_setup(asset, &marker)),
-        // Only Apple Silicon is shipped; requiring the `_arm64` marker keeps an
-        // accidental extra `.dmg` (say an Intel one) from being picked by order.
-        ("macos", "arm64") => assets.iter().find(|asset| {
+        // Require the architecture marker so a release carrying both DMGs never
+        // serves the wrong one by list order.
+        ("macos", _) => assets.iter().find(|asset| {
             is_release_asset(asset) && asset.name.ends_with(&format!("{marker}.dmg"))
         }),
         ("linux", _) => select_linux(assets, &marker),

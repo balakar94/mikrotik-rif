@@ -94,6 +94,11 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets
 
+      # `--all-targets` covers lib, bins, tests, benches and examples, but not
+      # documentation examples; compile and run those too.
+      - name: Run doctests
+        run: cargo test --locked --doc
+
       # PR-safe corpus guard (stable only, no nightly, no display: the
       # example only drives the parser over committed seeds, never a window).
       - name: Verify fuzz corpus
@@ -149,14 +154,48 @@ jobs:
       # MSRV gate: the crate declares `rust-version = "1.95"` in Cargo.toml
       # (the minimum the egui 0.37 tree builds with). The `test` matrix runs
       # the newest stable on three OSes; this Linux job is the only MSRV gate.
+      # `--all-targets` compiles tests, benches and examples too, so the floor
+      # is checked on every target a contributor can build, not just the binary.
       # Formatting lives here, not in the matrix: `rust-toolchain.toml` pins
       # channel 1.95 for local development, and rustfmt style must stay tied to
       # that pinned toolchain rather than drifting with newer stable rustfmt.
       - name: Check MSRV
-        run: cargo +1.95 check --locked
+        run: cargo +1.95 check --locked --all-targets
 
       - name: Check formatting (pinned toolchain)
         run: cargo +1.95 fmt --all --check
+
+  semver:
+    name: semver-checks (1.x library contract)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The baseline is the v1.0.0 tag: its history must be present.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      # The crate promises a SemVer 1.x library surface in ROADMAP.md. This
+      # compiles the public API of the tagged baseline and the working tree and
+      # fails on a breaking change that no test would catch (removed item,
+      # narrowed signature, changed enum discriminants). Additive items pass.
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked --version 0.51.0
+
+      - name: Check the library surface against v1.0.0
+        run: cargo semver-checks check-release --baseline-rev v1.0.0
 
   package:
     name: cargo package list (Linux)
@@ -167,6 +206,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
@@ -186,7 +226,7 @@ jobs:
           python3 -c "import tomllib; m=tomllib.load(open('Cargo.toml','rb'))['package']['metadata']; d=m['packager']['deb']['files']; a=m['packager']['appimage']['files']; r={x['dest'] for x in m['generate-rpm']['assets'] if x['dest'].startswith('/usr/share/licenses/') or x['dest'].startswith('/usr/share/mime/')}; assert set(d)==set(a), set(d)^set(a); assert set(d.values())==set(a.values())==r, (set(d.values())^r); print(f'packaging maps in sync: {len(d)} entries')"
 
   deny:
-    name: cargo-deny (advisories + licenses)
+    name: cargo-deny (advisories + licenses + sources)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -210,11 +250,12 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked --version 0.19.0
 
-      # Explicit check list so bans/sources defaults can never silently widen
-      # this policy. Exits non-zero on any advisory or unallowed license,
-      # which fails the CI job.
-      - name: Check advisories and licenses
-        run: cargo deny check advisories licenses
+      # Explicit check list so bans defaults can never silently widen this
+      # policy. Exits non-zero on any advisory, unallowed license, or crate
+      # resolved from an unapproved source (`[sources]` in deny.toml), which
+      # fails the CI job.
+      - name: Check advisories, licenses and sources
+        run: cargo deny check advisories licenses sources
 
       # The committed THIRD-PARTY-NOTICES.md must match Cargo.lock: MIT/BSD/ISC
       # and Apache-2.0 require the notices to travel with the binary, and a

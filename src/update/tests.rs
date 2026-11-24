@@ -27,6 +27,7 @@ fn realistic_assets() -> Vec<AssetInfo> {
     vec![
         asset("mikrotik-rif_0.2.0_amd64-setup.exe"),
         asset("mikrotik-rif_0.2.0_arm64-setup.exe"),
+        asset("mikrotik-rif_0.2.0_amd64.dmg"),
         asset("mikrotik-rif_0.2.0_arm64.dmg"),
         asset("mikrotik-rif_0.2.0_amd64.deb"),
         asset("mikrotik-rif_0.2.0_arm64.deb"),
@@ -130,15 +131,26 @@ fn windows_assets_match_by_arch_marker() {
 }
 
 #[test]
-fn macos_only_serves_apple_silicon() {
+fn macos_assets_match_by_arch_marker() {
     let assets = realistic_assets();
     assert_eq!(
         select_asset(&assets, "macos", "aarch64").map(|found| found.name.as_str()),
         Some("mikrotik-rif_0.2.0_arm64.dmg")
     );
+    assert_eq!(
+        select_asset(&assets, "macos", "x86_64").map(|found| found.name.as_str()),
+        Some("mikrotik-rif_0.2.0_amd64.dmg"),
+        "Intel macOS has its own DMG"
+    );
+    let arm_only = vec![asset("mikrotik-rif_0.2.0_arm64.dmg")];
     assert!(
-        select_asset(&assets, "macos", "x86_64").is_none(),
-        "Intel macOS is not shipped"
+        select_asset(&arm_only, "macos", "x86_64").is_none(),
+        "an arm64 DMG must not serve Intel"
+    );
+    let intel_only = vec![asset("mikrotik-rif_0.2.0_amd64.dmg")];
+    assert!(
+        select_asset(&intel_only, "macos", "aarch64").is_none(),
+        "an Intel DMG must not serve Apple Silicon"
     );
 }
 
@@ -632,6 +644,7 @@ fn current_build_workflow_names_match_the_selector() {
     let assets = vec![
         asset("mikrotik-rif_0.3.0_amd64-setup.exe"),
         asset("mikrotik-rif_0.3.0_arm64-setup.exe"),
+        asset("mikrotik-rif_0.3.0_amd64.dmg"),
         asset("mikrotik-rif_0.3.0_arm64.dmg"),
         asset("mikrotik-rif_0.3.0_amd64.deb"),
         asset("mikrotik-rif_0.3.0_arm64.deb"),
@@ -644,6 +657,7 @@ fn current_build_workflow_names_match_the_selector() {
     for (os, arch, expected) in [
         ("windows", "x86_64", "mikrotik-rif_0.3.0_amd64-setup.exe"),
         ("windows", "aarch64", "mikrotik-rif_0.3.0_arm64-setup.exe"),
+        ("macos", "x86_64", "mikrotik-rif_0.3.0_amd64.dmg"),
         ("macos", "aarch64", "mikrotik-rif_0.3.0_arm64.dmg"),
         ("linux", "x86_64", "mikrotik-rif_0.3.0_amd64.deb"),
         ("linux", "aarch64", "mikrotik-rif_0.3.0_arm64.deb"),

@@ -242,6 +242,11 @@ application-folder-position = { x = 480, y = 170 }
 # desktop entry, icon and shared-mime-info XML are installed by hand because
 # cargo-generate-rpm knows nothing about freedesktop integration.
 [package.metadata.generate-rpm]
+# RPM `License:` field. SPDX expression (RPM 4.20+ understands `AND`): the
+# application is MIT, the three bundled fonts are OFL-1.1 and egui's embedded
+# default fonts include Ubuntu-font-1.0. The full third-party texts ship as
+# assets below and in THIRD-PARTY-NOTICES.md.
+license = "MIT AND OFL-1.1 AND Ubuntu-font-1.0"
 assets = [
     { source = "target/release/mikrotik-rif", dest = "/usr/bin/mikrotik-rif", mode = "755" },
     { source = "assets/linux/mikrotik-rif.desktop", dest = "/usr/share/applications/mikrotik-rif.desktop", mode = "644" },

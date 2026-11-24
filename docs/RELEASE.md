@@ -12,9 +12,9 @@ scheduled fuzz campaign.
 
 | Workflow | File | Trigger | Purpose |
 | --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | The whole pull-request gate: format, lint and test on Linux, macOS and Windows; the MSRV (1.95) compile plus the pinned-toolchain `rustfmt` check; `cargo-deny` (advisories and licences); the zizmor workflow audit and the gitleaks secret scan; fuzz-corpus verification and drift guards (notices, packaging maps, licence allow-lists). It does not build release binaries, package anything, or upload artifacts. |
-| Build | `.github/workflows/build.yml` | `workflow_dispatch`, `workflow_call` | Build and package the native installers for all five runner/architecture combinations and upload them as workflow artifacts. It never publishes a release. |
-| Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Orchestration only: it calls `build.yml` (job `build`), generates the SBOM in an unprivileged `sbom` job, then — for `v*` tags and only then — downloads the artifacts, computes checksums and publishes a GitHub Release. |
+| CI | `.github/workflows/ci.yml` | `push` to `main`, `pull_request`, `workflow_dispatch` | The whole pull-request gate: format, lint and test on Linux, macOS and Windows; the MSRV (1.95) compile plus the pinned-toolchain `rustfmt` check; `cargo-deny` (advisories, licences and sources); `cargo-semver-checks` against the `v1.0.0` tag for the 1.x library contract; the zizmor workflow audit and the gitleaks secret scan; fuzz-corpus verification and drift guards (notices, packaging maps, licence allow-lists). It does not build release binaries, package anything, or upload artifacts. |
+| Build | `.github/workflows/build.yml` | `workflow_dispatch`, `workflow_call` | Build and package the native installers for all six runner/architecture combinations and upload them as workflow artifacts. It never publishes a release. |
+| Release | `.github/workflows/release.yml` | `push` of tags matching `v*`, `workflow_dispatch` | Orchestration only: it calls `build.yml` (job `build`), generates the SBOM in an unprivileged `sbom` job, then — for `v*` tags and only then — downloads the artifacts, computes checksums, creates a **draft** GitHub Release, verifies the uploaded asset names and finally promotes the draft. |
 | Packaging smoke | `.github/workflows/packaging-smoke.yml` | weekly `schedule`, `workflow_dispatch` | Calls `build.yml` outside tags so a packaging regression (like the v0.1.0 WiX failure) is caught before release week. It never publishes. |
 | Fuzz | `.github/workflows/fuzz.yml` | weekly `schedule`, `workflow_dispatch` | Runs the `cargo-fuzz` campaign (nightly toolchain, per-target time budget). Non-blocking by design: the job may fail, surfacing a crash artifact without gating pull requests or releases. It deliberately does not run on `pull_request`. |
 
@@ -29,11 +29,15 @@ scheduled fuzz campaign.
   the same artifacts, and skips the `release` job because `github.ref` is a
   branch, not a `v*` tag.
 - **Push of a `v*` tag** → `release.yml` calls `build.yml`, then the `release`
-  job runs and publishes the GitHub Release.
+  job runs: it creates a **draft** GitHub Release, verifies the draft's asset
+  names against `SHA256SUMS.txt`, and only then promotes it to a public,
+  latest release.
 
 **Only a `v*` tag publishes a release.** The `release` job is gated on
 `startsWith(github.ref, 'refs/tags/v')`; every other entry point stops after
-uploading artifacts.
+uploading artifacts. Release runs share one `concurrency` group with
+`cancel-in-progress: false`, so a tag build queues behind another instead of
+cancelling it and leaving a half-populated release.
 
 `release.yml` calls `build.yml` with `uses: ./.github/workflows/build.yml`. A
 reusable workflow invoked via `workflow_call` runs inside the caller's workflow
@@ -63,13 +67,26 @@ this scheme in its "Normalise release asset names" step.
 
 | Runner | Architecture | Tool | Output format (published name uses `amd64` / `arm64`) |
 | --- | --- | --- | --- |
-| `windows-latest` | x64 | cargo-packager | NSIS `-setup.exe` |
+| `windows-2025` | x64 | cargo-packager | NSIS `-setup.exe` |
 | `windows-11-arm` | arm64 | cargo-packager | NSIS `-setup.exe` |
-| `macos-latest` | arm64 (Apple Silicon) | cargo-packager | `.dmg` (the `.app` bundle is built as an intermediate step and imaged into the disk image) |
-| `ubuntu-latest` | x64 | cargo-packager | `.deb` |
-| `ubuntu-24.04-arm` | arm64 | cargo-packager | `.deb` |
-| `ubuntu-latest` | x64 | cargo-generate-rpm | `.rpm` |
+| `macos-15` | arm64 (Apple Silicon) | cargo-packager | `.dmg` (the `.app` bundle is built as an intermediate step and imaged into the disk image) |
+| `macos-15-intel` | x64 (Intel) | cargo-packager | `.dmg` (same `.app` → disk image path) |
+| `ubuntu-24.04` | x64 | cargo-packager | `.deb`, `.AppImage` |
+| `ubuntu-24.04-arm` | arm64 | cargo-packager | `.deb`, `.AppImage` |
+| `ubuntu-24.04` | x64 | cargo-generate-rpm | `.rpm` |
 | `ubuntu-24.04-arm` | arm64 | cargo-generate-rpm | `.rpm` |
+
+`macos-15-intel` is a current GitHub-hosted label, listed by GitHub's
+runner-images support policy as available through 2027; it is not a permanent
+label, so the leg must move to a newer `macos-*-intel` label before then.
+
+The Linux artifacts link against the runner's glibc: `ubuntu-24.04` (both
+architectures) carries glibc 2.39, and an AppImage does not bundle glibc.
+Everything Linux therefore requires **glibc 2.39 or newer** — Ubuntu 24.04+,
+Debian 13+, Fedora 40+, RHEL 10+ — while Debian 12, Ubuntu 22.04 and RHEL 9
+have to build from source (or use an AppImage built against an older glibc,
+which none of the current releases are). The Linux runner baseline is
+deliberately unchanged here.
 
 The architecture is part of every published name, so the amd64 and arm64
 artifacts never collide when the release job merges them into a single `dist/`
@@ -84,9 +101,11 @@ The in-app updater (`src/update.rs`, the only network code in the product)
 polls `https://api.github.com/repos/balakar94/mikrotik-rif/releases/latest`,
 compares `tag_name` (`vX.Y.Z`) against its own version, and picks the installer
 for the current platform with the matching rules documented in that module
-(NSIS `-setup.exe` with `_amd64`/`_arm64` on Windows, `.dmg` on Apple Silicon,
-and `.deb` → `.rpm` → `.AppImage` with `_amd64`/`_arm64` on Linux, preferring
-native packages).
+(NSIS `-setup.exe` with `_amd64`/`_arm64` on Windows, `.dmg` with
+`_amd64`/`_arm64` on macOS, and `.deb` → `.rpm` → `.AppImage` with
+`_amd64`/`_arm64` on Linux, preferring native packages). Both macOS disk images
+therefore carry their architecture marker, so the updater never confuses the
+Intel and Apple Silicon builds.
 
 **The file names above are a contract with the updater.** If `build.yml` ever
 renames an artifact, the table in `src/update.rs` (and its tests) must be
@@ -143,32 +162,42 @@ plumbing without publishing, dispatch **Release** manually with `dry-run: true`:
 the `Minisign dry-run` step generates an ephemeral key pair confined to
 `RUNNER_TEMP`, signs `SHA256SUMS.txt`, verifies with `minisign -V`, then
 discards the keys and the throwaway signature (`dist/` is left untouched and
-the Publish/post-publish steps are skipped).
+the publish/post-upload/promote steps are skipped).
 
 ## Release integrity gates
 
 `release.yml` runs checks around the publish job (`v*` tags only), so a
-release cannot publish assets that disagree with its tag or with its own
-checksums. The `release` job runs in the `release` GitHub environment with
-`timeout-minutes: 20` and minimal permissions
-(`contents: write, attestations: write, id-token: write`); publishing uses
-`fail_on_unmatched_files: true` and `make_latest: true`, so a missing `dist/*`
-file fails instead of silently publishing a partial release.
+release cannot publish assets that disagree with its tag, with its source
+branch, or with its own checksums. The `release` job runs in the `release`
+GitHub environment with `timeout-minutes: 20` and minimal permissions
+(`contents: write`, `attestations: write`, `id-token: write`). The draft upload
+uses `fail_on_unmatched_files: true`, so a missing `dist/*` file fails instead
+of silently uploading a partial release; `--latest` is applied only during
+promotion.
 
 - **Tag ↔ version**: `GITHUB_REF_NAME` must equal `v<version>` read from
   `Cargo.toml`, because cargo-packager bakes that version into every normalised
   asset name.
+- **Tag ↔ main**: the release job checks out with `fetch-depth: 0` and runs
+  `git merge-base --is-ancestor <tagged commit> origin/main`. A tag pushed from
+  an unmerged branch fails before anything is downloaded or uploaded, so a
+  release cannot bypass the pull-request gate.
 - **Manifest ↔ files (pre-publish)**: `SHA256SUMS.txt` must list exactly the
   files in `dist/`, and no name may contain whitespace — GitHub rewrites spaces
   on upload, which is what broke the v0.2.0 `.dmg`
   (`MikroTik RIF Viewer_0.2.0_aarch64.dmg` was published as
   `MikroTik.RIF.Viewer_0.2.0_aarch64.dmg`, so `sha256sum -c` no longer matched).
-- **Manifest ↔ published assets (post-publish)**: `gh release view` re-reads the
-  real asset names. This runs after the release exists, so a failure there means
-  "fix the names", not "nothing was published".
+- **Manifest ↔ uploaded assets (post-upload, pre-promote)**: `gh release view`
+  re-reads the real asset names from the draft. A failure here leaves the
+  release as a draft, so nothing is public and `releases/latest` (what the
+  updater reads) cannot see it; fix the names and re-run the job.
 - **Signature ↔ public key (post-sign)**: when `SHA256SUMS.txt.minisig` exists,
   `minisign -V` verifies it against `MIKROTIK_RIF_MINISIGN_PUBKEY` before
-  publishing.
+  anything is uploaded.
+- **Draft → promote**: the release is created with `draft: true`; only after the
+  post-upload gate passes does
+  `gh release edit "$GITHUB_REF_NAME" --draft=false --latest` publish it and
+  mark it latest. A `dry-run` dispatch never publishes or promotes.
 
 The `sbom` job — a separate `contents: read` job with no write token, OIDC
 grant or release key, because `cargo install` runs third-party build scripts —
@@ -181,8 +210,8 @@ Reproducibility notes: `rust-toolchain.toml` pins Rust 1.95 (the crate
 `rust-version` / MSRV); `build.yml` passes `MIKROTIK_RIF_COMMIT: ${{
 github.sha }}` into `cargo build --release --locked` so the baked-in commit is
 exact even without `.git`; runner labels are pinned (`ubuntu-24.04`,
-`macos-15`, `windows-2025`, plus the native `ubuntu-24.04-arm` /
-`windows-11-arm` arm64 runners); `build`/`ci test`/`deny` carry
+`macos-15`, `macos-15-intel`, `windows-2025`, plus the native `ubuntu-24.04-arm`
+/ `windows-11-arm` arm64 runners); `build`/`ci test`/`deny` carry
 `timeout-minutes: 60` and `release`/`sbom` carry `20`. Both `build.yml` and
 `release.yml` append `$GITHUB_STEP_SUMMARY` summaries (`rustc -Vv`,
 `git rev-parse HEAD`, `sha256sum dist/*`, `ls -lh`).
@@ -459,9 +488,14 @@ the official CLI directly.
    git tag -a v0.3.0 -m "v0.3.0"
    git push origin v0.3.0
    ```
+   The workflow refuses a tag whose commit is not an ancestor of `origin/main`,
+   so tag the merged commit, not a branch head.
 4. The Release workflow calls `build.yml`, computes `SHA256SUMS.txt` from the
-   merged artifacts, and creates the GitHub Release with
-   `generate_release_notes: true`.
+   merged artifacts, creates the GitHub Release as a **draft** with
+   `generate_release_notes: true`, verifies the draft's asset names against the
+   manifest, and only then promotes it with
+   `gh release edit v0.3.0 --draft=false --latest`. A failed verification
+   leaves a draft to fix and re-run; the tag itself stays immutable.
 
 To build installers without publishing (dry run), run the **Build** workflow
 directly via `workflow_dispatch`; the installers are uploaded as artifacts on
@@ -528,6 +562,17 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   `linuxdeploy-aarch64`/`AppRun-aarch64` assets remaining available.
 - arm64 standard runners are 2 vCPU in private repositories, so the arm64 jobs
   are slower and consume plan minutes (they are free-minute eligible).
+- The `macos-15-intel` leg is new in this matrix and has not produced a release
+  artifact yet. GitHub's runner-images support policy lists the label as
+  available through 2027, not permanently, so the leg must move to a newer
+  `macos-*-intel` label before then.
+- The draft → promote flow has not run on a real tag yet. The first release
+  after this change exercises it; a failed post-upload gate leaves a draft that
+  must be fixed and re-run (never deleted) before promotion.
+- The two macOS `.dmg` assets are only distinguishable by their `_amd64` /
+  `_arm64` markers. `src/update.rs` matches the marker for the running
+  architecture, and its tests cover both, but the Intel leg has not been through
+  a real release yet.
 - The exact output filenames (`mikrotik-rif_*`)
   are consumed through globs, so harmless naming changes will not break the
   workflow.
@@ -565,7 +610,7 @@ On Windows, if SmartScreen blocks the installer: **More info → Run anyway**.
   AppImage file itself is guaranteed.
 - Reusable-workflow artifact sharing: `build.yml` runs as part of the caller's
   run, so `actions/download-artifact` in `release.yml` is expected to see all
-  five artifacts via its default `run-id`. This has not been exercised on a real
+  six artifacts via its default `run-id`. This has not been exercised on a real
   run here; if the artifacts were ever not visible, the fallback is to add an
   explicit `run-id: ${{ github.run_id }}`, which is the same value the action
   already defaults to for a same-repo `workflow_call`.
