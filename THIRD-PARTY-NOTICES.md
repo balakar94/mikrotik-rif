@@ -59,7 +59,7 @@ Used by:
 - `linux-raw-sys 0.12.1` — https://github.com/sunfishcode/linux-raw-sys
 - `linux-raw-sys 0.4.15` — https://github.com/sunfishcode/linux-raw-sys
 - `rustix 0.38.44` — https://github.com/bytecodealliance/rustix
-- `rustix 1.1.4` — https://github.com/bytecodealliance/rustix
+- `rustix 1.1.6` — https://github.com/bytecodealliance/rustix
 - `wasi 0.11.1+wasi-snapshot-preview1` — https://github.com/bytecodealliance/wasi
 - `wit-bindgen 0.46.0` — https://github.com/bytecodealliance/wit-bindgen
 - `ring 0.17.14` — https://github.com/briansmith/ring
@@ -154,7 +154,7 @@ Used by:
 - `ahash 0.8.12` — https://github.com/tkaitchuck/ahash
 - `arrayvec 0.7.8` — https://github.com/bluss/arrayvec
 - `async-channel 2.5.0` — https://github.com/smol-rs/async-channel
-- `async-executor 1.14.0` — https://github.com/smol-rs/async-executor
+- `async-executor 1.14.1` — https://github.com/smol-rs/async-executor
 - `async-io 2.6.0` — https://github.com/smol-rs/async-io
 - `async-lock 3.4.2` — https://github.com/smol-rs/async-lock
 - `async-process 2.5.0` — https://github.com/smol-rs/async-process
@@ -193,7 +193,7 @@ Used by:
 - `flate2 1.1.10` — https://github.com/rust-lang/flate2-rs
 - `fnv 1.0.7` — https://github.com/servo/rust-fnv
 - `fontique 0.11.1` — https://github.com/linebender/parley
-- `form_urlencoded 1.2.2` — https://github.com/servo/rust-url
+- `form_urlencoded 1.2.3` — https://github.com/servo/rust-url
 - `futures-lite 2.6.1` — https://github.com/smol-rs/futures-lite
 - `gethostname 1.1.0` — https://codeberg.org/swsnr/gethostname.rs.git
 - `hashbrown 0.15.5` — https://github.com/rust-lang/hashbrown
@@ -242,7 +242,7 @@ Used by:
 - `rustc-hash 1.1.0` — https://github.com/rust-lang-nursery/rustc-hash
 - `rustc_version 0.4.1` — https://github.com/djc/rustc-version-rs
 - `rustix 0.38.44` — https://github.com/bytecodealliance/rustix
-- `rustix 1.1.4` — https://github.com/bytecodealliance/rustix
+- `rustix 1.1.6` — https://github.com/bytecodealliance/rustix
 - `rustls 0.23.46` — https://github.com/rustls/rustls
 - `rusty-fork 0.3.1` — https://github.com/altsysrq/rusty-fork
 - `scoped-tls 1.0.1` — https://github.com/alexcrichton/scoped-tls
@@ -261,7 +261,7 @@ Used by:
 - `unicode-properties 0.1.4` — https://github.com/unicode-rs/unicode-properties
 - `unicode-segmentation 1.13.3` — https://github.com/unicode-rs/unicode-segmentation
 - `unicode-width 0.2.2` — https://github.com/unicode-rs/unicode-width
-- `url 2.5.8` — https://github.com/servo/rust-url
+- `url 2.5.9` — https://github.com/servo/rust-url
 - `uuid 1.26.1` — https://github.com/uuid-rs/uuid
 - `version_check 0.9.5` — https://github.com/SergioBenitez/version_check
 - `wait-timeout 0.2.1` — https://github.com/alexcrichton/wait-timeout
