@@ -16,6 +16,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::io::Read;
 use std::sync::Arc;
 
@@ -25,10 +26,21 @@ use crate::parser::error::RifError;
 use crate::parser::limits::{Cancel, CaptureLimits};
 use crate::parser::scanner::{self, ContainerNote, PartSpan};
 
+/// Maximum label length retained for one part.
+///
+/// A RouterOS section name is a short menu name, and the label is copied into
+/// the index, the duplicate-label map and the viewer's filter list. Without a
+/// cap, four oversized labels can turn a 512 MiB capture into gigabytes of
+/// retained strings and make every filter keystroke walk them. Anything above
+/// this bound is reported as a per-part fault (see
+/// [`RifError::LabelTooLong`]) instead of aborting the capture.
+pub const MAX_LABEL_BYTES: usize = 4 * 1024;
+
 /// One named part of a capture.
-#[derive(Debug)]
 pub struct Part {
-    label: String,
+    /// Label declared by the router. Stored behind an [`Arc`] so the index,
+    /// the duplicate-label map and callers share one allocation.
+    label: Arc<str>,
     ordinal: usize,
     /// Transcoded body: label bytes, the `NUL` separator, then the compressed
     /// payload. Kept whole so the payload is a borrow rather than a copy.
@@ -43,7 +55,7 @@ impl Part {
     /// Build a placeholder for a part that could not be indexed.
     fn unreadable(position: usize, reason: String) -> Self {
         Self {
-            label: format!("<unreadable part {position}>"),
+            label: Arc::from(format!("<unreadable part {position}>")),
             ordinal: 0,
             decoded: Vec::new(),
             payload_start: 0,
@@ -108,14 +120,41 @@ impl Part {
     }
 }
 
+impl fmt::Debug for Part {
+    /// Never print the decoded payload: it is attacker-influenced capture text
+    /// and may contain credentials, and a single `debug!`/`{:?}` could dump
+    /// hundreds of megabytes. Metadata is enough to identify a part.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Part")
+            .field("label", &self.label)
+            .field("ordinal", &self.ordinal)
+            .field("compressed_len", &self.compressed_len())
+            .field("lossy_label", &self.lossy_label)
+            .field("fault", &self.fault)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Expanded text of one part.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PartText {
     /// Decoded text, with RouterOS carriage returns left intact.
     pub text: String,
 
     /// Whether decoding had to replace invalid UTF-8 sequences.
     pub lossy: bool,
+}
+
+impl fmt::Debug for PartText {
+    /// Print only the shape of the text, never its content.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PartText")
+            .field("bytes", &self.text.len())
+            .field("lossy", &self.lossy)
+            .finish()
+    }
 }
 
 impl PartText {
@@ -157,12 +196,23 @@ struct CacheEntry {
 /// Entries are keyed by part index alone. A cache must therefore be used with
 /// the single [`Capture`] it was filled from; sharing one across different
 /// captures would return text belonging to the wrong part.
-#[derive(Debug)]
 pub struct PartCache {
     entries: VecDeque<CacheEntry>,
     max_entries: usize,
     max_bytes: usize,
     bytes: usize,
+}
+
+impl fmt::Debug for PartCache {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PartCache")
+            .field("entries", &self.entries.len())
+            .field("bytes", &self.bytes)
+            .field("max_entries", &self.max_entries)
+            .field("max_bytes", &self.max_bytes)
+            .finish()
+    }
 }
 
 impl PartCache {
@@ -278,6 +328,9 @@ impl Default for PartCache {
 pub struct Capture {
     parts: Vec<Part>,
     notes: Vec<ContainerNote>,
+    /// Total structural oddities seen by the scan, including the ones dropped
+    /// after the retained-notes cap.
+    notes_total: usize,
 }
 
 impl Capture {
@@ -312,7 +365,8 @@ impl Capture {
         cancel: &Cancel,
     ) -> Result<Self, RifError> {
         let mut notes = Vec::new();
-        let spans = scanner::locate_parts_cancellable(source, limits, &mut notes, cancel)?;
+        let report = scanner::scan_cancellable(source, limits, &mut notes, cancel)?;
+        let spans = report.spans;
 
         if spans.len() > limits.max_parts {
             return Err(RifError::TooManyParts {
@@ -321,7 +375,7 @@ impl Capture {
             });
         }
 
-        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut seen: HashMap<Arc<str>, usize> = HashMap::new();
         let mut parts = Vec::with_capacity(spans.len());
         let mut total_payload_bytes: u64 = 0;
 
@@ -350,7 +404,7 @@ impl Capture {
                         ));
                         continue;
                     }
-                    let counter = seen.entry(indexed.label.clone()).or_insert(0);
+                    let counter = seen.entry(Arc::clone(&indexed.label)).or_insert(0);
                     let ordinal = *counter;
                     *counter += 1;
                     parts.push(Part {
@@ -375,7 +429,11 @@ impl Capture {
             }
         }
 
-        Ok(Self { parts, notes })
+        Ok(Self {
+            parts,
+            notes,
+            notes_total: report.notes_total,
+        })
     }
 
     /// Index a capture arriving as a byte stream.
@@ -413,9 +471,22 @@ impl Capture {
     }
 
     /// Structural oddities noticed while scanning, if any.
+    ///
+    /// The list is capped (see [`crate::parser::scanner`]); use
+    /// [`Self::notes_total`] for the number the scan actually saw.
     #[must_use]
     pub fn notes(&self) -> &[ContainerNote] {
         &self.notes
+    }
+
+    /// Total structural oddities the scan saw, including those beyond the
+    /// retained-notes cap.
+    ///
+    /// The UI reports this number so a flood of damage is not silently rounded
+    /// down to the length of [`Self::notes`].
+    #[must_use]
+    pub const fn notes_total(&self) -> usize {
+        self.notes_total
     }
 
     /// Number of parts, readable or not.
@@ -436,7 +507,7 @@ impl Capture {
         self.parts
             .iter()
             .enumerate()
-            .filter(|(_, part)| part.label == label)
+            .filter(|(_, part)| part.label.as_ref() == label)
             .map(|(index, _)| index)
             .collect()
     }
@@ -451,7 +522,26 @@ impl Capture {
     /// hit instead of scanning the whole capture.
     #[must_use]
     pub fn find_first_named(&self, label: &str) -> Option<usize> {
-        self.parts.iter().position(|part| part.label == label)
+        self.parts
+            .iter()
+            .position(|part| part.label.as_ref() == label)
+    }
+
+    /// Indices of parts whose label matches `needle`, in capture order.
+    ///
+    /// The filter is the same case-insensitive substring match used by
+    /// [`filter_parts`], but it reads the labels already owned by the capture,
+    /// so the viewer does not need to keep a second `Vec<String>` mirror and
+    /// duplicate every label in memory.
+    #[must_use]
+    pub fn filter_indices(&self, needle: &str) -> Vec<usize> {
+        let needle = needle.trim().to_lowercase();
+        self.parts
+            .iter()
+            .enumerate()
+            .filter(|(_, part)| label_contains_ci(part.label(), &needle))
+            .map(|(index, _)| index)
+            .collect()
     }
 
     /// Expand one part into text.
@@ -495,7 +585,7 @@ impl Capture {
             .ok_or(RifError::NoSuchPart { index })?;
         if part.fault.is_some() {
             return Err(RifError::PartFlagged {
-                label: part.label.clone(),
+                label: part.label.as_ref().to_owned(),
             });
         }
         deflate::expand_cancellable(part.payload(), limits.max_part_bytes, cancel)
@@ -572,7 +662,7 @@ fn decode_text(bytes: Vec<u8>) -> PartText {
 
 /// One indexed body: the transcoded buffer plus where its payload starts.
 struct IndexedPart {
-    label: String,
+    label: Arc<str>,
     decoded: Vec<u8>,
     payload_start: usize,
     lossy_label: bool,
@@ -601,6 +691,13 @@ fn index_part(body: &[u8], position: usize, budget: usize) -> Result<IndexedPart
     if separator == 0 {
         return Err(RifError::MissingLabelSeparator);
     }
+    if separator > MAX_LABEL_BYTES {
+        return Err(RifError::LabelTooLong {
+            position,
+            len: separator,
+            limit: MAX_LABEL_BYTES,
+        });
+    }
 
     let payload_start = separator + 1;
     if payload_start >= decoded.len() {
@@ -608,9 +705,9 @@ fn index_part(body: &[u8], position: usize, budget: usize) -> Result<IndexedPart
     }
 
     let label_bytes = &decoded[..separator];
-    let (label, lossy_label) = match std::str::from_utf8(label_bytes) {
-        Ok(label) => (label.to_owned(), false),
-        Err(_) => (String::from_utf8_lossy(label_bytes).into_owned(), true),
+    let (label, lossy_label): (Arc<str>, bool) = match std::str::from_utf8(label_bytes) {
+        Ok(label) => (Arc::from(label), false),
+        Err(_) => (Arc::from(String::from_utf8_lossy(label_bytes)), true),
     };
 
     Ok(IndexedPart {
@@ -635,30 +732,28 @@ fn index_part(body: &[u8], position: usize, budget: usize) -> Result<IndexedPart
 #[must_use]
 pub fn filter_parts(labels: &[String], needle: &str) -> Vec<usize> {
     let needle = needle.trim().to_lowercase();
-    if needle.is_ascii() {
-        let needle_bytes = needle.as_bytes();
-        labels
-            .iter()
-            .enumerate()
-            .filter(|(_, label)| {
-                if needle.is_empty() {
-                    return true;
-                }
-                if label.is_ascii() {
-                    ascii_contains_ci(label.as_bytes(), needle_bytes)
-                } else {
-                    label.to_lowercase().contains(&needle)
-                }
-            })
-            .map(|(index, _)| index)
-            .collect()
+    labels
+        .iter()
+        .enumerate()
+        .filter(|(_, label)| label_contains_ci(label, &needle))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Case-insensitive substring test shared by [`filter_parts`] and
+/// [`Capture::filter_indices`].
+///
+/// `needle` must already be trimmed and lowercased. Pure-ASCII input keeps the
+/// allocation-free byte scan; anything else falls back to Unicode lowercasing
+/// on both sides so accented labels still match.
+fn label_contains_ci(label: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if label.is_ascii() && needle.is_ascii() {
+        ascii_contains_ci(label.as_bytes(), needle.as_bytes())
     } else {
-        labels
-            .iter()
-            .enumerate()
-            .filter(|(_, label)| needle.is_empty() || label.to_lowercase().contains(&needle))
-            .map(|(index, _)| index)
-            .collect()
+        label.to_lowercase().contains(needle)
     }
 }
 
@@ -1232,5 +1327,87 @@ mod tests {
                 "label {label:?}"
             );
         }
+    }
+
+    #[test]
+    fn filter_indices_reads_the_capture_labels_without_a_mirror() {
+        let source = wrap(&[
+            encode_part(b"Firewall", b"rules"),
+            encode_part(b"log", b"entries"),
+            encode_part(b"firewall/nat", b"rules"),
+        ]);
+        let capture =
+            Capture::from_bytes(&source, &CaptureLimits::default()).expect("fixture must index");
+        assert_eq!(capture.filter_indices(""), [0, 1, 2]);
+        assert_eq!(capture.filter_indices("  FIRE "), [0, 2]);
+        assert_eq!(capture.filter_indices("log"), [1]);
+        assert!(capture.filter_indices("missing").is_empty());
+    }
+
+    #[test]
+    fn oversized_labels_become_per_part_faults() {
+        let oversized = vec![b'a'; MAX_LABEL_BYTES + 1];
+        let source = wrap(&[
+            encode_part(&oversized, b"discarded"),
+            encode_part(b"log", b"kept"),
+        ]);
+        let limits = CaptureLimits::default();
+        let capture = Capture::from_bytes(&source, &limits).expect("capture must still index");
+
+        assert_eq!(capture.len(), 2, "both parts stay listed");
+        assert!(!capture.parts()[0].is_readable());
+        assert!(
+            capture.parts()[0]
+                .fault()
+                .is_some_and(|fault| fault.contains("label")),
+            "fault must name the label cap: {:?}",
+            capture.parts()[0].fault()
+        );
+        assert_eq!(capture.parts()[1].label(), "log");
+        assert_eq!(capture.read(1, &limits).expect("second part").text, "kept");
+
+        // The cap is inclusive: a label exactly at the bound is accepted.
+        let exact = vec![b'b'; MAX_LABEL_BYTES];
+        let source = wrap(&[encode_part(&exact, b"ok")]);
+        let capture = Capture::from_bytes(&source, &limits).expect("exact label must index");
+        assert!(capture.parts()[0].is_readable());
+        assert_eq!(capture.parts()[0].label().len(), MAX_LABEL_BYTES);
+    }
+
+    #[test]
+    fn debug_output_never_dumps_payload_text() {
+        let source = wrap(&[encode_part(b"log", b"super-secret-token")]);
+        let limits = CaptureLimits::default();
+        let capture = Capture::from_bytes(&source, &limits).expect("fixture must index");
+
+        let rendered = format!("{capture:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "capture Debug leaked the payload: {rendered}"
+        );
+        assert!(rendered.contains("log"), "metadata must stay visible");
+
+        let text = capture.read(0, &limits).expect("part must expand");
+        let rendered = format!("{text:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "PartText Debug leaked the payload: {rendered}"
+        );
+        assert!(rendered.contains("bytes"), "shape must stay visible");
+    }
+
+    #[test]
+    fn capture_reports_notes_beyond_the_retained_cap() {
+        let mut source = Vec::new();
+        for _ in 0..1500 {
+            source.extend_from_slice(CLOSE_MARKER);
+            source.push(b'\n');
+        }
+        source.extend_from_slice(&wrap(&[encode_part(b"log", b"kept")]));
+        let capture =
+            Capture::from_bytes(&source, &CaptureLimits::default()).expect("capture must index");
+        assert_eq!(capture.parts().len(), 1);
+        assert_eq!(capture.notes().len(), 1000, "retained notes are capped");
+        assert_eq!(capture.notes_total(), 1500, "the real total is reported");
     }
 }

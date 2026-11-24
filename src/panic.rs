@@ -190,13 +190,13 @@ fn append_log_to(path: &Path, message: &str, location: &str) -> std::io::Result<
 /// `O_CREAT|O_EXCL`: it fails with `AlreadyExists` when anything at all sits at
 /// `path` — including a symlink, which `O_EXCL` refuses to follow — so a link
 /// planted in advance cannot capture the entry. Only when the existing entry is
-/// a regular file do we fall back to a plain append (truncating first when it
-/// exceeded [`MAX_LOG_BYTES`]); a link is moved aside and the exclusive create
-/// retried.
+/// a regular file do we fall back to a plain append (shortening it with
+/// `set_len` *after* the identity check when it exceeded [`MAX_LOG_BYTES`]); a
+/// link is moved aside and the exclusive create retried.
 ///
 /// A link swapped in *after* the lstat and before the fallback `open` is still
-/// caught: the handle is compared against the inode that was inspected, and a
-/// mismatch fails the append instead of writing through the link. A lost log
+/// caught on Unix: the handle is compared against the inode that was inspected,
+/// and a mismatch fails before anything is truncated or written. A lost log
 /// entry is an acceptable price for never writing panic text into an unrelated
 /// file.
 fn append_log_file(path: &Path) -> std::io::Result<std::fs::File> {
@@ -214,19 +214,28 @@ fn append_log_file(path: &Path) -> std::io::Result<std::fs::File> {
         let _ = std::fs::rename(path, PathBuf::from(backup));
         return exclusive_append_open(path);
     }
-    // Truncation is done by reopening the file rather than with
-    // `File::set_len`: on Windows the append-only handle does not carry the
-    // access right that resizing requires, so `set_len` fails there.
+    // A FIFO or device planted at the log path would make the fallback open
+    // block or write somewhere unexpected; only a regular file is acceptable.
+    if !existing.file_type().is_file() {
+        return Err(std::io::Error::other(
+            "panic log path is not a regular file",
+        ));
+    }
+    // Truncation is deliberately *after* the identity check on Unix: opening
+    // with `truncate` first would let a link swapped in after the `lstat`
+    // truncate its target before the mismatch is noticed. Opening without
+    // truncation touches nothing, the dev/ino check refuses a swapped entry,
+    // and only a verified handle is shortened. On non-Unix targets there is no
+    // inode check, so the previous reopen-and-truncate path is kept.
     let oversized = existing.len() > MAX_LOG_BYTES;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(oversized)
-        .append(!oversized)
-        .open(path)?;
     #[cfg(unix)]
-    {
+    let file = {
         use std::os::unix::fs::MetadataExt as _;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!oversized)
+            .open(path)?;
         // Same device and inode as the entry we inspected: the handle is the
         // file we meant to append to and not the target of a link swapped in
         // between the two syscalls.
@@ -236,7 +245,19 @@ fn append_log_file(path: &Path) -> std::io::Result<std::fs::File> {
                 "panic log path was replaced while it was being opened",
             ));
         }
-    }
+        if oversized {
+            // Safe now: the handle is the verified regular file.
+            file.set_len(0)?;
+        }
+        file
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(oversized)
+        .append(!oversized)
+        .open(path)?;
     Ok(file)
 }
 

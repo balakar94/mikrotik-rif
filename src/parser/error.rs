@@ -141,4 +141,26 @@ pub enum RifError {
     /// downgraded to a [`crate::parser::Part`] fault.
     #[error("operation cancelled")]
     Cancelled,
+
+    /// The label declared by one part is longer than the safety cap.
+    ///
+    /// Labels are routing keys and display names, not payloads: a legitimate
+    /// RouterOS section name is a short menu name (`firewall`, `resource`, …),
+    /// so anything above [`crate::parser::MAX_LABEL_BYTES`] is treated as a
+    /// damaged part instead of being retained (and cloned) as a multi-megabyte
+    /// string. The part is downgraded to a per-part fault, so the rest of the
+    /// capture stays readable.
+    ///
+    /// This variant is appended last on purpose: `RifError` is
+    /// `#[non_exhaustive]`, but adding a variant in the middle would renumber
+    /// the existing discriminants and break downstream `as` casts.
+    #[error("part {position} label is {len} bytes long, above the {limit}-byte label limit")]
+    LabelTooLong {
+        /// Position of the part within the capture.
+        position: usize,
+        /// Declared label length, in bytes.
+        len: usize,
+        /// Configured safety cap.
+        limit: usize,
+    },
 }

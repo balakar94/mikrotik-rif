@@ -23,6 +23,29 @@ use std::ops::Range;
 /// case index at ~0.8 % of the text while leaving a scan of a few KiB.
 const CHECKPOINT_STRIDE: usize = 1024;
 
+/// Row containing the byte `offset` in `text`.
+///
+/// The count is zero-based and matches [`LineIndex::line_range`] rows: offset
+/// zero is row zero, and an offset on a line ending still belongs to the line
+/// that ends there. Offsets past the end are clamped to the last row.
+///
+/// This is a plain forward scan over the prefix, used once per global-search
+/// hit to jump to the matching line. Building a full [`LineIndex`] just to map
+/// one offset would walk the entire module and allocate checkpoints, which the
+/// global search deliberately avoids.
+#[must_use]
+#[allow(
+    clippy::naive_bytecount,
+    reason = "one prefix scan on a global-search hit; a dependency for one call is not justified"
+)]
+pub fn line_of_offset(text: &str, offset: usize) -> usize {
+    let end = offset.min(text.len());
+    text.as_bytes()[..end]
+        .iter()
+        .filter(|&&byte| byte == b'\n')
+        .count()
+}
+
 /// Line starts (every [`CHECKPOINT_STRIDE`] lines) plus the line count and the
 /// widest line in characters.
 ///
@@ -209,6 +232,24 @@ mod tests {
         assert_eq!(index.line_count(), 1);
         assert_eq!(index.max_line_chars(), 0);
         assert_eq!(index.line_range("", 0), 0..0);
+    }
+
+    #[test]
+    fn line_of_offset_matches_the_indexed_rows() {
+        let text = "alpha\nbeta\ngamma\n";
+        assert_eq!(line_of_offset(text, 0), 0);
+        assert_eq!(line_of_offset(text, 5), 0, "the newline ends row 0");
+        assert_eq!(line_of_offset(text, 6), 1, "first byte of row 1");
+        assert_eq!(line_of_offset(text, 10), 1);
+        assert_eq!(line_of_offset(text, 11), 2);
+        assert_eq!(line_of_offset(text, text.len()), 3, "trailing empty row");
+        assert_eq!(line_of_offset(text, text.len() + 100), 3, "clamped");
+        assert_eq!(line_of_offset("", 0), 0);
+        // Multibyte text: the offset is a byte position, not a char index.
+        let unicode = "ñ\n🚀\n";
+        assert_eq!(line_of_offset(unicode, 0), 0);
+        assert_eq!(line_of_offset(unicode, 3), 1);
+        assert_eq!(line_of_offset(unicode, unicode.len()), 2);
     }
 
     #[test]
