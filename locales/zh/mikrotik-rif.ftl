@@ -59,6 +59,8 @@ button-find = 在此模块中搜索
 
 ## 错误与模块状态
 module-unreadable = 无法索引此模块。
+module-empty = 此模块为空。
+label-internal = 内部
 error-open = 无法打开 { $path }：{ $reason }
 error-open-unreadable = 无法读取文件：{ $detail }
 error-open-dir = 这是一个目录，不是文件
@@ -78,6 +80,7 @@ update-now = 立即更新
 update-later = 稍后
 update-skip = 跳过此版本
 update-auto = 自动检查更新
+update-privacy = 每次启动检查一次：向 api.github.com 发送应用名称和版本。不发送捕获数据或身份标识。
 
 ## 设置
 button-settings = 设置

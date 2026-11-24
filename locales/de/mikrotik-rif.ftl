@@ -68,6 +68,8 @@ button-find = In diesem Modul suchen
 
 ## Fehler und Modulstatus
 module-unreadable = Dieses Modul konnte nicht indexiert werden.
+module-empty = Dieses Modul ist leer.
+label-internal = intern
 error-open = { $path } konnte nicht geöffnet werden: { $reason }
 error-open-unreadable = Die Datei kann nicht gelesen werden: { $detail }
 error-open-dir = Ist ein Verzeichnis, keine Datei
@@ -87,6 +89,7 @@ update-now = Jetzt aktualisieren
 update-later = Später
 update-skip = Diese Version überspringen
 update-auto = Automatisch nach Updates suchen
+update-privacy = Eine Prüfung pro Start: App-Name und Version gehen an api.github.com. Keine Capture-Daten, keine Kennungen.
 
 ## Einstellungen
 button-settings = Einstellungen

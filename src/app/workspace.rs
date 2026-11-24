@@ -217,13 +217,20 @@ impl Viewer {
                     let hit = self
                         .search
                         .as_ref()
-                        .is_some_and(|search| search.hits.contains(&index));
+                        .is_some_and(|search| search.hits.contains_key(&index));
                     let marker = if hit {
                         format!("  · {}", self.i18n.text("label-search-hit"))
                     } else {
                         String::new()
                     };
-                    let label = format!("{}{ordinal}{flag}{marker}", part.label());
+                    // Dot-prefixed sections are RouterOS internals; keep them
+                    // listed (nothing is hidden) but say what they are.
+                    let internal = if part.label().starts_with('.') {
+                        format!("  · {}", self.i18n.text("label-internal"))
+                    } else {
+                        String::new()
+                    };
+                    let label = format!("{}{ordinal}{flag}{marker}{internal}", part.label());
                     let selected = self.selected == Some(index);
                     let text = if !part.is_readable() {
                         RichText::new(label).color(palette.danger)
@@ -389,6 +396,19 @@ impl Viewer {
             return;
         }
 
+        if self
+            .body
+            .as_ref()
+            .is_some_and(|body| body.text.text.is_empty())
+        {
+            let palette = theme::current(ui.ctx());
+            let message = self.i18n.text("module-empty");
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new(message).color(palette.muted));
+            });
+            return;
+        }
+
         self.text_view(ui);
     }
 
@@ -514,7 +534,7 @@ impl Viewer {
         let count = self
             .capture
             .as_ref()
-            .map_or(0, |capture| capture.notes().len());
+            .map_or(0, |capture| capture.notes_total());
         if count == 0 {
             return;
         }
@@ -736,8 +756,15 @@ impl Viewer {
         let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
         if let Some(row) = jump {
             area = area.vertical_scroll_offset(row as f32 * (row_height + spacing));
+        } else if let Some(offset) = self
+            .selected
+            .and_then(|index| self.view_offsets.get(&index).copied())
+        {
+            // Revisiting a module restores where the reader was, even though
+            // the text itself was cached and did not need expanding again.
+            area = area.vertical_scroll_offset(offset);
         }
-        area.show_rows(ui, row_height, lines, |ui, range| {
+        let output = area.show_rows(ui, row_height, lines, |ui, range| {
             ui.set_min_width(content_width);
             for row in range {
                 let raw = &text[index.line_range(text, row)];
@@ -771,6 +798,10 @@ impl Viewer {
                 ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
             }
         });
+        if let Some(index) = self.selected {
+            self.view_offsets
+                .insert(index, output.state.clamped_offset().y);
+        }
     }
 
     /// Recompute which lines contain the find query.
