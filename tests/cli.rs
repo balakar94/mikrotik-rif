@@ -122,6 +122,25 @@ fn help_flags_print_usage_and_exit_zero() {
         assert!(stdout.contains("Usage:"), "{flag}: {stdout:?}");
         assert!(stdout.contains("--list"), "{flag}: {stdout:?}");
         assert!(stdout.contains("--extract"), "{flag}: {stdout:?}");
+        assert!(stdout.contains("--version"), "{flag}: {stdout:?}");
+    }
+}
+
+#[test]
+fn version_flags_print_the_crate_version_and_exit_zero() {
+    for flag in ["--version", "-V"] {
+        let output = cli(&[OsStr::new(flag)]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{flag}: stderr {}",
+            text(&output.stderr)
+        );
+        let stdout = text(&output.stdout);
+        assert!(
+            stdout.trim() == format!("mikrotik-rif {}", env!("CARGO_PKG_VERSION")),
+            "{flag}: {stdout:?}"
+        );
     }
 }
 
@@ -231,6 +250,39 @@ fn list_reports_every_part_and_marks_unreadable_ones() {
     assert_eq!(beta.len(), 4, "{:?}", lines[2]);
     assert_eq!(beta[1], "beta");
     assert_eq!(beta[3], "ok");
+}
+
+#[test]
+fn list_json_is_machine_readable_and_indexes_duplicates() {
+    let (_dir, path) = capture_file(
+        "list-json",
+        &[
+            encode_part(b"log", b"first\n"),
+            encode_part(b"log", b"second\n"),
+            codec::pack(b"no-separator"),
+        ],
+    );
+
+    let output = cli(&[OsStr::new("--list"), OsStr::new("--json"), path.as_os_str()]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr {}",
+        text(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(document["schema"], 1);
+    let parts = document["parts"].as_array().expect("parts array");
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[0]["index"], 0);
+    assert_eq!(parts[1]["index"], 1);
+    assert_eq!(parts[0]["ordinal"], 0);
+    assert_eq!(parts[1]["ordinal"], 1);
+    assert_eq!(parts[0]["label"], "log");
+    assert_eq!(parts[0]["readable"], true);
+    assert_eq!(parts[2]["readable"], false);
+    assert!(parts[2]["fault"].as_str().is_some());
 }
 
 #[test]

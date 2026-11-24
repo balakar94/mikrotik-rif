@@ -12,10 +12,11 @@
 //!
 //! Owned by the CLI stream; the full implementation lives here.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 
 use crate::filenames::{escape_label, sanitize};
@@ -80,10 +81,14 @@ pub(crate) fn dispatch() -> Option<i32> {
 enum Command {
     /// Print usage and exit successfully.
     Help,
+    /// Print the version and exit successfully.
+    Version,
     /// List every indexed part.
     List {
         /// Capture file to open.
         capture: PathBuf,
+        /// Emit a JSON document instead of the tab-separated listing.
+        json: bool,
     },
     /// Expand one or more modules.
     Extract(ExtractRequest),
@@ -98,6 +103,8 @@ struct ExtractRequest {
     selection: Selection,
     /// Where expanded text goes.
     destination: Destination,
+    /// Emit terminal control characters verbatim even when writing to a TTY.
+    force_raw: bool,
 }
 
 /// Which parts `--extract` selects.
@@ -151,15 +158,17 @@ fn parse_args(args: &[OsString]) -> Result<Option<Command>, UsageError> {
     };
     match token {
         "-h" | "--help" => Ok(Some(Command::Help)),
+        "-V" | "--version" => Ok(Some(Command::Version)),
         "--list" => parse_list(&args[1..]).map(Some),
         "--extract" => parse_extract(&args[1..]).map(Some),
         _ => Ok(None),
     }
 }
 
-/// Parse `--list [--] <capture>`.
+/// Parse `--list [--json] [--] <capture>`.
 fn parse_list(args: &[OsString]) -> Result<Command, UsageError> {
     let mut capture: Option<PathBuf> = None;
+    let mut json = false;
     let mut options_ended = false;
     for arg in args {
         if !options_ended && arg.as_os_str() == OsStr::new("--") {
@@ -171,6 +180,13 @@ fn parse_list(args: &[OsString]) -> Result<Command, UsageError> {
             && token.starts_with('-')
             && token != "-"
         {
+            if token == "--json" {
+                if json {
+                    return Err(UsageError("--json may be given only once".to_owned()));
+                }
+                json = true;
+                continue;
+            }
             return Err(UsageError(format!("unknown option {token:?} for --list")));
         }
         if capture.is_some() {
@@ -183,16 +199,21 @@ fn parse_list(args: &[OsString]) -> Result<Command, UsageError> {
     let Some(capture) = capture else {
         return Err(UsageError("--list requires a capture path".to_owned()));
     };
-    Ok(Command::List { capture })
+    Ok(Command::List { capture, json })
 }
 
 /// Parse `--extract [--] <capture> [--module <label>] [--out <dir>] [--stdout] [--all]`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the flag grammar is easier to audit in one place than split across helpers"
+)]
 fn parse_extract(args: &[OsString]) -> Result<Command, UsageError> {
     let mut capture: Option<PathBuf> = None;
     let mut module: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut stdout = false;
     let mut all = false;
+    let mut force_raw = false;
     let mut options_ended = false;
     let mut index = 0;
 
@@ -227,6 +248,10 @@ fn parse_extract(args: &[OsString]) -> Result<Command, UsageError> {
                     }
                     "--stdout" => {
                         stdout = true;
+                        continue;
+                    }
+                    "--force-raw" => {
+                        force_raw = true;
                         continue;
                     }
                     "--all" => {
@@ -278,11 +303,17 @@ fn parse_extract(args: &[OsString]) -> Result<Command, UsageError> {
         (false, Some(dir)) => Destination::Directory(dir),
         (false, None) => Destination::DefaultDirectory,
     };
+    if force_raw && !matches!(destination, Destination::Stdout) {
+        return Err(UsageError(
+            "--force-raw is only meaningful with --stdout".to_owned(),
+        ));
+    }
 
     Ok(Command::Extract(ExtractRequest {
         capture,
         selection,
         destination,
+        force_raw,
     }))
 }
 
@@ -326,16 +357,28 @@ enum Stream {
 /// Run a parsed command and return its exit code.
 fn run(command: Command) -> i32 {
     let stdout = io::stdout();
+    let stdout_is_terminal = stdout.is_terminal();
     let mut out = stdout.lock();
     let result = match command {
         Command::Help => write_help(&mut out),
-        Command::List { capture } => list(&capture, &mut out),
-        Command::Extract(request) => extract(&request, &mut out),
+        Command::Version => write_version(&mut out),
+        Command::List { capture, json } => list(&capture, json, &mut out),
+        Command::Extract(request) => extract_for_run(&request, &mut out, stdout_is_terminal),
     };
     match result {
         Ok(()) => EXIT_OK,
         Err(error) => report(&error),
     }
+}
+
+/// Write the version line to `out`.
+fn write_version<W: Write>(out: &mut W) -> Result<(), CliError> {
+    let version = format!("{CODE_NAME} {}\n", crate::build_info::VERSION);
+    if write_bytes(out, version.as_bytes())? == Stream::Closed {
+        return Ok(());
+    }
+    flush_output(out)?;
+    Ok(())
 }
 
 /// Print an operational failure and return the matching exit code.
@@ -351,13 +394,16 @@ fn write_help<W: Write>(out: &mut W) -> Result<(), CliError> {
          \n\
          Usage:\n\
          \x20 {CODE_NAME} --help | -h\n\
-         \x20 {CODE_NAME} --list <capture.rif>\n\
+         \x20 {CODE_NAME} --version | -V\n\
+         \x20 {CODE_NAME} --list [--json] <capture.rif>\n\
          \x20 {CODE_NAME} --extract <capture.rif> --module <label> [--out <dir> | --stdout]\n\
          \x20 {CODE_NAME} --extract <capture.rif> --all [--out <dir> | --stdout]\n\
          \n\
          Commands:\n\
          \x20 -h, --help            Print this help and exit.\n\
+         \x20 -V, --version         Print the version and exit.\n\
          \x20     --list            List every part: ordinal, label, compressed bytes, status.\n\
+         \x20     --json            With --list, emit a JSON document instead of TSV.\n\
          \x20     --extract         Expand module text.\n\
          \n\
          Extract options:\n\
@@ -365,6 +411,7 @@ fn write_help<W: Write>(out: &mut W) -> Result<(), CliError> {
          \x20     --all             Expand every readable part.\n\
          \x20     --out <dir>       Write expanded text as <dir>/<sanitised-label>.txt.\n\
          \x20     --stdout          Write expanded text to standard output.\n\
+         \x20     --force-raw       With --stdout, keep control characters when stdout is a terminal.\n\
          \n\
          Other:\n\
          \x20     --                Treat the next argument as a path, even if it starts with '-'.\n\
@@ -429,14 +476,22 @@ fn load_capture(path: &Path) -> Result<Capture, CliError> {
     Ok(capture)
 }
 
-/// Print one tab-separated line per part to `out`.
+/// Print one tab-separated line per part, or a JSON document with `--json`.
 ///
 /// Labels come from the capture file and are untrusted: control characters
 /// (newlines, ANSI escapes) are neutralised with [`escape_label`] so a
 /// hostile label cannot inject lines or terminal sequences into the listing.
-/// The extracted content itself is never altered here.
-fn list<W: Write>(path: &Path, out: &mut W) -> Result<(), CliError> {
+/// JSON escapes them for the same reason. The extracted content itself is
+/// never altered here.
+///
+/// The JSON shape is additive and versioned (`schema: 1`) so scripts can rely
+/// on `index` (the part's position, not the duplicate ordinal), `label`,
+/// `compressed_bytes`, `readable` and `fault` without parsing the TSV.
+fn list<W: Write>(path: &Path, json: bool, out: &mut W) -> Result<(), CliError> {
     let capture = load_capture(path)?;
+    if json {
+        return list_json(&capture, out);
+    }
     let mut listing = String::new();
     for part in capture.parts() {
         let status = match part.fault() {
@@ -459,13 +514,66 @@ fn list<W: Write>(path: &Path, out: &mut W) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Serialize the index as `{ "schema": 1, "parts": [...] }`.
+fn list_json<W: Write>(capture: &Capture, out: &mut W) -> Result<(), CliError> {
+    let parts: Vec<serde_json::Value> = capture
+        .parts()
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            serde_json::json!({
+                "index": index,
+                "label": escape_label(part.label()),
+                "ordinal": part.ordinal(),
+                "compressed_bytes": part.compressed_len(),
+                "readable": part.is_readable(),
+                "fault": part.fault(),
+            })
+        })
+        .collect();
+    let document = serde_json::json!({
+        "schema": 1,
+        "parts": parts,
+    });
+    // Render first so a closed `| head` pipe is a clean stop, exactly like the
+    // TSV path, instead of a serialization error surfaced as exit 1.
+    let rendered = serde_json::to_string_pretty(&document)
+        .map_err(|error| CliError::operational(format!("cannot write JSON: {error}")))?;
+    if write_bytes(out, rendered.as_bytes())? == Stream::Closed {
+        return Ok(());
+    }
+    write_bytes(out, b"\n")?;
+    flush_output(out)?;
+    Ok(())
+}
+
 /// Expand the selected modules into their destination, reporting written paths
 /// to `out` for the directory destinations.
 ///
 /// The total expanded output is bounded by [`MAX_EXTRACT_BYTES`] and the number
-/// of files by [`MAX_EXTRACT_FILES`].
+/// of files by [`MAX_EXTRACT_FILES`]. Test-only: production goes through
+/// [`extract_for_run`], which adds the TTY guard.
+#[cfg(test)]
 fn extract<W: Write>(request: &ExtractRequest, out: &mut W) -> Result<(), CliError> {
     extract_with_budget(request, out, MAX_EXTRACT_BYTES)
+}
+
+/// Production entry point: like [`extract`], but neutralises terminal control
+/// sequences when the destination is a live terminal.
+///
+/// A capture body is attacker-influenced and `--stdout` writes it verbatim, so
+/// a part could emit OSC/CSI sequences (clipboard writes, fake prompts, screen
+/// clears). Pipes and redirections stay byte-exact; a TTY gets the controls
+/// replaced unless the caller passes `--force-raw`.
+fn extract_for_run<W: Write>(
+    request: &ExtractRequest,
+    out: &mut W,
+    stdout_is_terminal: bool,
+) -> Result<(), CliError> {
+    let sanitize = matches!(request.destination, Destination::Stdout)
+        && stdout_is_terminal
+        && !request.force_raw;
+    extract_with_limits_and_sanitize(request, out, MAX_EXTRACT_BYTES, MAX_EXTRACT_FILES, sanitize)
 }
 
 /// Expand `request` into its destination while keeping the sum of the expanded
@@ -473,6 +581,7 @@ fn extract<W: Write>(request: &ExtractRequest, out: &mut W) -> Result<(), CliErr
 ///
 /// The budget is a parameter only so tests can exercise the limit with small
 /// fixtures; [`extract`] always passes [`MAX_EXTRACT_BYTES`].
+#[cfg(test)]
 fn extract_with_budget<W: Write>(
     request: &ExtractRequest,
     out: &mut W,
@@ -483,17 +592,32 @@ fn extract_with_budget<W: Write>(
 
 /// [`extract_with_budget`] with an explicit file-count cap, so tests can
 /// exercise the cap without a ten-thousand-part fixture.
+#[cfg(test)]
 fn extract_with_limits<W: Write>(
     request: &ExtractRequest,
     out: &mut W,
     budget: usize,
     max_files: usize,
 ) -> Result<(), CliError> {
+    extract_with_limits_and_sanitize(request, out, budget, max_files, false)
+}
+
+/// The common implementation behind [`extract_with_limits`] and the
+/// TTY-guarded production path.
+fn extract_with_limits_and_sanitize<W: Write>(
+    request: &ExtractRequest,
+    out: &mut W,
+    budget: usize,
+    max_files: usize,
+    sanitize_stdout: bool,
+) -> Result<(), CliError> {
     let capture = load_capture(&request.capture)?;
     let limits = CaptureLimits::default();
     let indices = selected_indices(&capture, &request.selection)?;
     match &request.destination {
-        Destination::Stdout => extract_to_stdout(&capture, &indices, &limits, budget, out),
+        Destination::Stdout => {
+            extract_to_stdout(&capture, &indices, &limits, budget, sanitize_stdout, out)
+        }
         Destination::Directory(directory) => {
             check_file_count(indices.len(), max_files)?;
             extract_to_directory(&capture, &indices, &limits, budget, directory, out)
@@ -606,7 +730,10 @@ fn selected_indices(capture: &Capture, selection: &Selection) -> Result<Vec<usiz
 ///
 /// The label in the header is untrusted capture input, so it is passed through
 /// [`escape_label`] to neutralise newlines and ANSI escapes that could forge
-/// headers or drive the terminal. The expanded body is written verbatim.
+/// headers or drive the terminal. The body is written byte-for-byte unless
+/// `sanitize_stdout` is set (the destination is a live terminal and
+/// `--force-raw` was not passed), in which case control characters other than
+/// tab, CR and LF are replaced with `?`.
 ///
 /// Only expanded body bytes count against `budget`; headers are framing, not
 /// module text. A part that would cross the budget is refused before its header
@@ -616,6 +743,7 @@ fn extract_to_stdout<W: Write>(
     indices: &[usize],
     limits: &CaptureLimits,
     budget: usize,
+    sanitize_stdout: bool,
     out: &mut W,
 ) -> Result<(), CliError> {
     let with_headers = indices.len() > 1;
@@ -625,14 +753,19 @@ fn extract_to_stdout<W: Write>(
         let text = capture.read(index, limits).map_err(|error| {
             CliError::operational(format!("cannot expand module {:?}: {error}", part.label()))
         })?;
-        if !within_budget(total, text.text.len(), budget) {
+        let body = if sanitize_stdout {
+            sanitize_terminal(&text.text)
+        } else {
+            Cow::Borrowed(text.text.as_str())
+        };
+        if !within_budget(total, body.len(), budget) {
             return Err(budget_exceeded(
                 part.label(),
                 budget,
                 "earlier output was already written to stdout",
             ));
         }
-        total += text.text.len();
+        total = total.saturating_add(body.len());
         // Two sequential writes keep the byte stream identical to the old
         // single `chunk` write while avoiding a second copy of the expanded
         // text (up to 256 MiB per part) in an intermediate `String`.
@@ -646,12 +779,38 @@ fn extract_to_stdout<W: Write>(
                 return Ok(());
             }
         }
-        if write_bytes(out, text.text.as_bytes())? == Stream::Closed {
+        if write_bytes(out, body.as_bytes())? == Stream::Closed {
             return Ok(());
         }
     }
     flush_output(out)?;
     Ok(())
+}
+
+/// Replace terminal control characters in expanded text.
+///
+/// Tab, CR and LF are kept because they are ordinary text formatting; every
+/// other C0/C1 control (including ESC, BEL and DEL) becomes `?`. The result
+/// borrows the input when nothing was replaced, so clean modules cost no copy.
+fn sanitize_terminal(text: &str) -> Cow<'_, str> {
+    let mut cleaned: Option<String> = None;
+    for (offset, character) in text.char_indices() {
+        if is_terminal_control(character) {
+            let buffer = cleaned.get_or_insert_with(|| String::with_capacity(text.len()));
+            if buffer.is_empty() {
+                buffer.push_str(&text[..offset]);
+            }
+            buffer.push('?');
+        } else if let Some(buffer) = cleaned.as_mut() {
+            buffer.push(character);
+        }
+    }
+    cleaned.map_or(Cow::Borrowed(text), Cow::Owned)
+}
+
+/// Whether a character can drive a terminal rather than being ordinary text.
+fn is_terminal_control(character: char) -> bool {
+    character.is_control() && !matches!(character, '\n' | '\r' | '\t')
 }
 
 /// Expand every selected module into `directory`, one sanitised file per part,
@@ -853,13 +1012,35 @@ mod tests {
     }
 
     #[test]
+    fn version_flags_are_recognised() {
+        assert_eq!(
+            parse_args(&args(&["--version"])).unwrap(),
+            Some(Command::Version)
+        );
+        assert_eq!(parse_args(&args(&["-V"])).unwrap(), Some(Command::Version));
+    }
+
+    #[test]
     fn list_parses_one_capture() {
         assert_eq!(
             parse_args(&args(&["--list", "a.rif"])).unwrap(),
             Some(Command::List {
-                capture: PathBuf::from("a.rif")
+                capture: PathBuf::from("a.rif"),
+                json: false,
             })
         );
+    }
+
+    #[test]
+    fn list_accepts_json() {
+        assert_eq!(
+            parse_args(&args(&["--list", "--json", "a.rif"])).unwrap(),
+            Some(Command::List {
+                capture: PathBuf::from("a.rif"),
+                json: true,
+            })
+        );
+        assert!(parse_args(&args(&["--list", "--json", "--json", "a.rif"])).is_err());
     }
 
     #[test]
@@ -867,7 +1048,8 @@ mod tests {
         assert_eq!(
             parse_args(&args(&["--list", "--", "-dash.rif"])).unwrap(),
             Some(Command::List {
-                capture: PathBuf::from("-dash.rif")
+                capture: PathBuf::from("-dash.rif"),
+                json: false,
             })
         );
     }
@@ -895,6 +1077,7 @@ mod tests {
                 capture: PathBuf::from("cap.rif"),
                 selection: Selection::Module("ip/firewall".to_owned()),
                 destination: Destination::Directory(PathBuf::from("parts")),
+                force_raw: false,
             }))
         );
     }
@@ -907,6 +1090,7 @@ mod tests {
                 capture: PathBuf::from("cap.rif"),
                 selection: Selection::All,
                 destination: Destination::DefaultDirectory,
+                force_raw: false,
             }))
         );
     }
@@ -926,8 +1110,49 @@ mod tests {
                 capture: PathBuf::from("cap.rif"),
                 selection: Selection::Module("log".to_owned()),
                 destination: Destination::Stdout,
+                force_raw: false,
             }))
         );
+    }
+
+    #[test]
+    fn force_raw_requires_stdout() {
+        assert_eq!(
+            parse_args(&args(&[
+                "--extract",
+                "cap.rif",
+                "--module",
+                "log",
+                "--stdout",
+                "--force-raw"
+            ]))
+            .unwrap(),
+            Some(Command::Extract(ExtractRequest {
+                capture: PathBuf::from("cap.rif"),
+                selection: Selection::Module("log".to_owned()),
+                destination: Destination::Stdout,
+                force_raw: true,
+            }))
+        );
+        assert!(
+            parse_args(&args(&["--extract", "cap.rif", "--all", "--force-raw"])).is_err(),
+            "raw output only makes sense for --stdout"
+        );
+    }
+
+    #[test]
+    fn terminal_sanitizer_keeps_layout_controls_and_replaces_escapes() {
+        let text = "line\u{1b}]52;c;clipboard\u{7}\nnext\tfield\r";
+        let cleaned = sanitize_terminal(text);
+        assert!(!cleaned.contains('\u{1b}'));
+        assert!(!cleaned.contains('\u{7}'));
+        assert!(cleaned.contains('\n'));
+        assert!(cleaned.contains('\t'));
+        assert!(cleaned.contains('\r'));
+        assert_eq!(cleaned.matches('?').count(), 2);
+
+        let clean = "plain\nlines\ttoo\r\n";
+        assert!(matches!(sanitize_terminal(clean), Cow::Borrowed(_)));
     }
 
     #[test]
@@ -993,6 +1218,7 @@ mod tests {
                 capture: PathBuf::from("-cap.rif"),
                 selection: Selection::All,
                 destination: Destination::DefaultDirectory,
+                force_raw: false,
             }))
         );
     }
@@ -1125,7 +1351,7 @@ mod tests {
             ],
         );
         let mut output = Vec::new();
-        list(&path, &mut output).expect("listing must succeed");
+        list(&path, false, &mut output).expect("listing must succeed");
         let listing = String::from_utf8(output).expect("utf-8");
         let lines: Vec<&str> = listing.lines().collect();
         assert_eq!(lines.len(), 3, "{listing:?}");
@@ -1136,12 +1362,42 @@ mod tests {
     }
 
     #[test]
+    fn list_json_uses_the_part_index_not_the_duplicate_ordinal() {
+        let (_dir, path) = capture_file(
+            "list-json",
+            &[
+                encode_part(b"log", b"first\n"),
+                encode_part(b"log", b"second\n"),
+                encode_part(b"other", b"third\n"),
+            ],
+        );
+        let mut output = Vec::new();
+        list(&path, true, &mut output).expect("json listing must succeed");
+        let document: serde_json::Value =
+            serde_json::from_slice(&output).expect("output must be valid JSON");
+
+        assert_eq!(document["schema"], 1);
+        let parts = document["parts"].as_array().expect("parts array");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["index"], 0);
+        assert_eq!(parts[0]["ordinal"], 0);
+        assert_eq!(parts[0]["label"], "log");
+        assert_eq!(parts[0]["readable"], true);
+        assert_eq!(parts[1]["index"], 1);
+        assert_eq!(parts[1]["ordinal"], 1);
+        assert_eq!(parts[2]["label"], "other");
+        assert_eq!(parts[2]["ordinal"], 0);
+        assert!(parts[0]["compressed_bytes"].as_u64().is_some());
+        assert!(parts[0]["fault"].is_null());
+    }
+
+    #[test]
     fn list_rejects_a_file_without_parts() {
         let dir = TempDir::new("not-a-capture");
         let path = dir.path().join("random.bin");
         std::fs::write(&path, b"not a capture").expect("write");
         let mut output = Vec::new();
-        assert!(list(&path, &mut output).is_err());
+        assert!(list(&path, false, &mut output).is_err());
     }
 
     #[test]
@@ -1158,6 +1414,7 @@ mod tests {
             capture: path,
             selection: Selection::Module("../evil".to_owned()),
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         let mut report = Vec::new();
         extract(&request, &mut report).expect("extract must succeed");
@@ -1184,6 +1441,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         let mut report = Vec::new();
         extract(&request, &mut report).expect("extract must succeed");
@@ -1211,6 +1469,7 @@ mod tests {
             capture: path.clone(),
             selection: Selection::Module("alpha".to_owned()),
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         extract(&single, &mut output).expect("stdout extract");
@@ -1220,6 +1479,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         extract(&all, &mut output).expect("stdout extract all");
@@ -1264,6 +1524,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         let mut report = Vec::new();
         extract_with_budget(&request, &mut report, 16).expect("a total of exactly 16 bytes fits");
@@ -1284,6 +1545,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         let error = extract_with_budget(&request, &mut output, 16)
@@ -1304,6 +1566,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         let mut report = Vec::new();
         let error = extract_with_budget(&request, &mut report, 16)
@@ -1334,6 +1597,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         let _error = extract_with_budget(&request, &mut output, 16).expect_err("budget exceeded");
@@ -1365,6 +1629,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         let mut report = Vec::new();
         let error = extract_with_limits(&request, &mut report, 1 << 20, 2)
@@ -1385,6 +1650,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         extract_with_limits(&request, &mut output, 1 << 20, 2).expect("stdout writes no files");
@@ -1400,6 +1666,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         extract_with_limits(&request, &mut Vec::new(), 1 << 20, 3)
             .expect("three files fit a three-file cap");
@@ -1421,6 +1688,7 @@ mod tests {
             capture: path,
             selection: Selection::Module("log".to_owned()),
             destination: Destination::DefaultDirectory,
+            force_raw: false,
         };
         let mut report = Vec::new();
         extract(&request, &mut report).expect("extract");
@@ -1437,6 +1705,7 @@ mod tests {
             capture: path,
             selection: Selection::Module("nope".to_owned()),
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         assert!(extract(&request, &mut output).is_err());
@@ -1452,6 +1721,7 @@ mod tests {
             capture: path,
             selection: Selection::Module("log".to_owned()),
             destination: Destination::Directory(out_dir.clone()),
+            force_raw: false,
         };
         let mut report = Vec::new();
         extract(&request, &mut report).expect("extract must succeed");
@@ -1479,6 +1749,7 @@ mod tests {
             capture: path,
             selection: Selection::Module("log".to_owned()),
             destination: Destination::Directory(out_dir),
+            force_raw: false,
         };
         let mut report = Vec::new();
         let error = extract(&request, &mut report).expect_err("symlink must be refused");
@@ -1501,7 +1772,7 @@ mod tests {
         assert!(!escaped.contains('\x1b'));
 
         let mut listing = Vec::new();
-        list(&path, &mut listing).expect("listing must succeed");
+        list(&path, false, &mut listing).expect("listing must succeed");
         let listing = String::from_utf8(listing).expect("utf-8");
         assert_eq!(listing.lines().count(), 2, "{listing:?}");
         assert!(listing.contains(&escaped), "{listing:?}");
@@ -1511,6 +1782,7 @@ mod tests {
             capture: path,
             selection: Selection::All,
             destination: Destination::Stdout,
+            force_raw: false,
         };
         let mut output = Vec::new();
         extract(&request, &mut output).expect("stdout extract");
