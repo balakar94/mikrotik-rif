@@ -71,6 +71,8 @@ button-find = Search in this module
 
 ## Errors and module state
 module-unreadable = This module could not be indexed.
+module-empty = This module is empty.
+label-internal = internal
 error-open = Could not open { $path }: { $reason }
 error-open-unreadable = Cannot read the file: { $detail }
 error-open-dir = Is a directory, not a file
@@ -90,6 +92,7 @@ update-now = Update now
 update-later = Later
 update-skip = Skip this version
 update-auto = Automatic update checks
+update-privacy = One check per launch: the app name and version are sent to api.github.com. No capture data and no identifiers.
 
 ## Settings
 button-settings = Settings

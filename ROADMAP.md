@@ -9,6 +9,8 @@ words are honest about this repository's current state:
 - **implemented, exercised only by seed replay** — the harness and tests exist
   and run on the normal path, but the scheduled campaign is non-blocking and
   only seed replay has actually executed.
+- **implemented, pending its first run** — the YAML or code is in the tree, but
+  no real release has exercised it yet.
 - **candidate** — worth considering, not scheduled.
 - **not planned for now** — deliberately out of scope.
 
@@ -49,7 +51,9 @@ Everything below is post-1.0 work: none of it blocks the release, and the
 - **Library surface, integration and property tests** — *done.* The parser is
   exposed as a library (`src/lib.rs`), with `tests/parser_integration.rs`,
   `tests/parser_properties.rs` and `tests/cancellation.rs`, plus an opt-in
-  real-corpus test gated on `MIKROTIK_RIF_CORPUS`.
+  real-corpus test gated on `MIKROTIK_RIF_CORPUS`. CI additionally runs
+  `cargo-semver-checks check-release --baseline-rev v1.0.0`, so an accidental
+  break of the published 1.x surface fails the pull-request gate.
 
 - **Fuzzing harness** — *implemented, exercised only by seed replay.* Four
   `cargo-fuzz` targets live under `fuzz/` with a committed seed corpus and a
@@ -60,9 +64,10 @@ Everything below is post-1.0 work: none of it blocks the release, and the
   indexing, the codec, expansion and the cache, and is declared with
   `harness = false` so the standard command measures for real.
 
-- **Headless CLI** — *done.* The same binary answers `--help`/`-h`, `--list`
-  and `--extract` (with `--module`/`--all` and `--out`/`--stdout`); a bare path
-  or no arguments still opens the desktop viewer.
+- **Headless CLI** — *done.* The same binary answers `--help`/`-h`,
+  `--version`/`-V`, `--list` (also `--json` for a machine-readable listing) and
+  `--extract` (with `--module`/`--all` and `--out`/`--stdout`); a bare path or
+  no arguments still opens the desktop viewer.
 
 - **CLI capture size gate (512 MiB)** — *done.* `load_capture` in `src/cli.rs`
   rejects oversize inputs twice: once from file metadata before reading, once
@@ -76,6 +81,34 @@ Everything below is post-1.0 work: none of it blocks the release, and the
   `CANCEL_CHECK_BYTES` (1 MiB) in `src/parser/scanner.rs` trips the `Cancel`
   token on byte budget in addition to the existing per-line check, so long
   lines abort promptly.
+
+## Release engineering
+
+- **GitHub build-provenance attestations** (`actions/attest-build-provenance`,
+  Sigstore via OIDC, no key custody) — *done.* `release.yml` attests every file
+  in `dist/` on each `v*` tag (`subject-path: dist/*`), so a download can be
+  checked with `gh attestation verify <file> --repo balakar94/mikrotik-rif`.
+  It complements, rather than replaces, `SHA256SUMS.txt` and the optional
+  minisign signature; the in-app updater does not consume it.
+
+- **Intel macOS (x86_64) `.dmg`** — *implemented, pending its first run.*
+  `build.yml` gained a `macos-15-intel` leg that publishes
+  `mikrotik-rif_<version>_amd64.dmg`, and `src/update.rs` picks the `.dmg` for
+  the running macOS architecture (`_amd64` / `_arm64`). GitHub lists that
+  runner label as available through 2027, not permanently, so the leg needs a
+  newer label before then; the first release with this leg is still pending.
+
+- **Draft-then-promote releases** — *implemented, pending its first run.*
+  `release.yml` creates the GitHub Release as a draft, verifies the uploaded
+  asset names against `SHA256SUMS.txt`, and only then promotes it with
+  `gh release edit --draft=false --latest`. A failed name check leaves a draft
+  instead of a public release.
+
+- **Linux glibc 2.39 floor** — *documented, not addressed.* The `ubuntu-24.04`
+  runners produce `.deb`, `.rpm` and AppImage artifacts that require glibc
+  2.39+ (Ubuntu 24.04+, Debian 13+, Fedora 40+, RHEL 10+); Debian 12,
+  Ubuntu 22.04 and RHEL 9 have to build from source. Building on an older
+  baseline (a container image or an older runner) is a *candidate*.
 
 ## Release signing
 
@@ -106,13 +139,6 @@ Everything below is post-1.0 work: none of it blocks the release, and the
   Apple and Microsoft certificates and, on macOS, a notarization step; the
   project currently ships unsigned on purpose and documents the manual
   open-anyway gesture in the README.
-
-- **GitHub build-provenance attestations** (`actions/attest-build-provenance`,
-  Sigstore via OIDC, no key custody) — *candidate.*
-
-  Gives users verifiable build provenance with `gh attestation verify` and no
-  private key to manage. It is not usable by the in-app updater, which would
-  need a Sigstore verifier; it would complement, not replace, SHA-256 checks.
 
 ## Product and quality
 
@@ -158,11 +184,10 @@ Everything below is post-1.0 work: none of it blocks the release, and the
   exempt. Covered by `extract_refuses_more_files_than_the_cap_without_writing_any`
   and `extract_file_cap_*`.
 
-- **CI: exercise the newest stable toolchain** — *done.* The `test` job sets
-  `RUSTUP_TOOLCHAIN: stable`, so the 3-OS matrix compiles and tests with the
-  newest stable instead of repeating the MSRV build, while
-  `rust-toolchain.toml` still pins 1.95 for local development and the `msrv`
-  job keeps the 1.95 compile gate plus the pinned-toolchain rustfmt check.
+- **CI: pin Rust 1.100.0 everywhere** — *done.* `rust-toolchain.toml`,
+  `Cargo.toml` (`rust-version`) and every CI/release job use 1.100.0, so the
+  3-OS test matrix, the MSRV compile gate, formatting, packaging and local
+  builds all exercise the same toolchain.
 
 - **AppImage host integration** for double-click `.rif` — *host-dependent.* The
   portable image carries the desktop entry and MIME XML but does not install

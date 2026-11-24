@@ -89,8 +89,7 @@ fn emit_build_identity() {
     println!("cargo:rerun-if-env-changed=MIKROTIK_RIF_MINISIGN_PUBKEY");
     let pubkey = std::env::var("MIKROTIK_RIF_MINISIGN_PUBKEY")
         .ok()
-        .map(|value| value.trim().to_owned())
-        .unwrap_or_default();
+        .map_or_default(|value| value.trim().to_owned());
     println!("cargo:rustc-env=MIKROTIK_RIF_MINISIGN_PUBKEY={pubkey}");
 }
 

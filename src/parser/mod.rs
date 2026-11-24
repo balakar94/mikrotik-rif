@@ -47,10 +47,10 @@ mod view;
 #[cfg(test)]
 mod roundtrip;
 
-pub use capture::{Capture, Part, PartCache, PartText};
+pub use capture::{Capture, MAX_LABEL_BYTES, Part, PartCache, PartText};
 pub use capture::{filter_parts, next_match};
 pub use limits::{Cancel, CaptureLimits};
-pub use view::LineIndex;
+pub use view::{LineIndex, line_of_offset};
 
 /// Human-readable product name.
 pub const PRODUCT_NAME: &str = "MikroTik RIF Viewer";

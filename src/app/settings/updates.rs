@@ -59,6 +59,11 @@ impl Viewer {
 
         ui.add_space(10.0);
         ui.checkbox(&mut self.updater.auto, &auto_label);
+        ui.label(
+            RichText::new(self.i18n.text("update-privacy"))
+                .size(11.5)
+                .color(palette.muted),
+        );
 
         let checking = self.updater.is_checking();
         let downloading = self.updater.is_downloading();

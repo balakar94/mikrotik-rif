@@ -2,15 +2,15 @@
 #
 # Validated locally with: cargo-deny 0.19.0
 #   cargo deny list -f tsv          # to enumerate real licenses in the tree
-#   cargo deny check advisories licenses
+#   cargo deny check advisories licenses sources
 # CI installs the same pinned version with:
 #   cargo install cargo-deny --locked --version 0.19.0
-# and runs: cargo deny check advisories licenses
+# and runs: cargo deny check advisories licenses sources
 #
-# Only `advisories` and `licenses` are configured on purpose. `cargo deny check`
-# without arguments still passes today (bans/sources use permissive defaults),
-# but CI invokes the two checks explicitly so future default changes in
-# bans/sources cannot break or silently widen this policy.
+# `advisories`, `licenses` and `sources` are configured on purpose. `cargo deny
+# check` without arguments still passes today (bans uses a permissive default),
+# but CI invokes these checks explicitly so future default changes in bans
+# cannot break or silently widen this policy.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Advisories (RustSec): any vulnerability is an error and fails the check.
@@ -90,3 +90,14 @@ confidence-threshold = 0.8
 # Warn (don't fail) when an allowed license becomes unused, so removing a
 # dependency doesn't break CI for the wrong reason. Review warnings on bump PRs.
 unused-allowed-license = "warn"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sources: only crates.io is accepted. A dependency resolved from a git
+# repository or an alternative registry is an unaudited code source (it can
+# change under a fixed version), so both are denied outright. crates.io itself
+# stays allowed through cargo-deny's default `allow-registry`; CI enforces this
+# with `cargo deny check advisories licenses sources`.
+# ─────────────────────────────────────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

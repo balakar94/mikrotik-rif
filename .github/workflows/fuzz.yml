@@ -60,7 +60,7 @@ jobs:
 
       # Same SHA-pinned dtolnay action as ci.yml/release.yml, pinned to a
       # `master` commit for the reason documented there. The explicit
-      # `toolchain: nightly` overrides rust-toolchain.toml's stable 1.95 pin:
+      # `toolchain: nightly` overrides rust-toolchain.toml's 1.100.0 pin:
       # cargo-fuzz adds -Zsanitizer=address and the sancov flags, which stable
       # rustc rejects (fuzz/README.md -> Toolchain). The action only runs
       # `rustup default nightly`, which the checked-in rust-toolchain.toml

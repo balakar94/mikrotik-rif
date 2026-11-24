@@ -71,6 +71,8 @@ button-find = Поиск в этом модуле
 
 ## Ошибки и состояние модуля
 module-unreadable = Не удалось проиндексировать этот модуль.
+module-empty = Этот модуль пуст.
+label-internal = внутренний
 error-open = Не удалось открыть { $path }: { $reason }
 error-open-unreadable = Не удалось прочитать файл: { $detail }
 error-open-dir = Это каталог, а не файл
@@ -90,6 +92,7 @@ update-now = Обновить сейчас
 update-later = Позже
 update-skip = Пропустить эту версию
 update-auto = Проверять обновления автоматически
+update-privacy = Одна проверка при запуске: имя и версия приложения отправляются на api.github.com. Без данных захвата и идентификаторов.
 
 ## Настройки
 button-settings = Настройки

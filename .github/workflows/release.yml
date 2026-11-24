@@ -19,6 +19,14 @@ on:
 permissions:
   contents: read
 
+# Serialise releases. Tag builds upload release assets, so cancelling one
+# halfway can leave a half-populated release; queue instead of cancelling
+# (`cancel-in-progress: false`). Manual dry-run dispatches share the group on
+# purpose: they are short and never publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -48,11 +56,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Read-only job: never leave the token in .git/config.
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
-          toolchain: stable
+          toolchain: "1.100.0"
 
       # Provenance: CycloneDX SBOM of the release tree, attached alongside the
       # installers and covered by SHA256SUMS.txt (generated in the release job)
@@ -81,7 +92,7 @@ jobs:
     needs: [build, sbom]
     # Only a version tag publishes; workflow_dispatch keeps artifacts only,
     # unless the ephemeral-signing dry-run was requested (which also stops
-    # before publishing; see the Publish step condition).
+    # before the draft is published and promoted; see those steps' conditions).
     if: startsWith(github.ref, 'refs/tags/v') || inputs.dry-run
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -92,8 +103,14 @@ jobs:
       attestations: write
       id-token: write
     steps:
+      # Full history plus the remote branches: the tag→main ancestor gate below
+      # needs the commit graph and `origin/main`, not a shallow single-ref
+      # checkout. Credentials are not persisted because this job never pushes.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       # Gate 1: the tag must match Cargo.toml. cargo-packager bakes Cargo.toml's
       # `version` into every normalised asset name
@@ -119,6 +136,32 @@ jobs:
           fi
           echo "OK: tag '${tag}' matches Cargo.toml version '${version}'."
 
+      # Gate 1b: the tag must point at a commit already merged to main. A tag
+      # pushed from an unmerged branch would publish an unreviewed commit as a
+      # release, bypassing the PR gate entirely. `fetch-depth: 0` above supplies
+      # both the history and `origin/main`; `${GITHUB_SHA}^{commit}` peels an
+      # annotated tag object to its commit so the check works either way.
+      # Reached only on tags; skipped for the dry-run dispatch (no tag to check).
+      # ROLLBACK: delete this step (and `fetch-depth: 0` above); the tag/version
+      # gate still runs, but nothing then checks that the commit is on main.
+      - name: Verify tagged commit is an ancestor of main
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet origin/main > /dev/null; then
+            echo "ERROR: origin/main is missing from the checkout, so the tag" >&2
+            echo "ERROR: cannot be checked against the main branch." >&2
+            exit 1
+          fi
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if ! git merge-base --is-ancestor "${commit}" origin/main; then
+            echo "ERROR: tagged commit ${commit} is not an ancestor of origin/main." >&2
+            echo "ERROR: merge the release commit to main before tagging." >&2
+            exit 1
+          fi
+          echo "OK: tagged commit ${commit} is an ancestor of origin/main."
+
       - name: Download all installer artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -140,14 +183,14 @@ jobs:
             | xargs -0 sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      # Gate 2 (pre-publish): SHA256SUMS.txt must list exactly the files that
-      # will be uploaded (`files: dist/*` in the Publish step), and no name may
+      # Gate 2 (pre-upload): SHA256SUMS.txt must list exactly the files that
+      # will be uploaded (`files: dist/*` in the draft publish step), and no name may
       # contain whitespace. GitHub Releases rewrites spaces in asset names
       # (v0.2.0 shipped `MikroTik RIF Viewer_0.2.0_aarch64.dmg`, published as
       # `MikroTik.RIF.Viewer_0.2.0_aarch64.dmg`), which makes the published
       # names diverge from the manifest and breaks `sha256sum -c`. Failing here
-      # prevents publishing a Release whose own checksums do not match its
-      # assets. The post-publish step below re-checks against the real release.
+      # prevents uploading a draft whose own checksums do not match its assets.
+      # The post-upload draft check below re-reads the real server-side names.
       # ROLLBACK: delete this step.
       - name: Verify SHA256SUMS.txt matches the files to publish
         working-directory: dist
@@ -267,25 +310,37 @@ jobs:
         with:
           subject-path: "dist/*"
 
-      - name: Publish release
+      # Publish as a DRAFT first. A draft is invisible to the public and to the
+      # updater (`releases/latest` never points at a draft), which lets the
+      # post-upload verification below re-read the real, server-side asset
+      # names before anyone can download them. The promotion step after that
+      # check publishes and marks the release latest; a failure in between
+      # leaves a draft to fix and re-run, not a public release with wrong names.
+      # ROLLBACK: set `draft: false` and restore `make_latest: true` here and
+      # delete the promotion step below. That reintroduces the window where a
+      # name mismatch is public before it is detected. Note that re-running
+      # this job re-drafts an already published release until the promote step
+      # succeeds again, so do not re-run a published tag casually.
+      - name: Publish draft release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          draft: true
           generate_release_notes: true
-          make_latest: true
           fail_on_unmatched_files: true
           body: |
             Desktop viewer for MikroTik RouterOS support captures (`supout.rif`).
 
             ## Downloads
 
-            Every file is named `mikrotik-rif_<version>_<arch>.<ext>`, where
-            `<arch>` is `amd64` (64-bit Intel/AMD) or `arm64`:
+            Every installer is named `mikrotik-rif_<version>_<arch>.<ext>`,
+            where `<arch>` is `amd64` (64-bit Intel/AMD) or `arm64`:
 
             | Platform | Package |
             | --- | --- |
             | Windows | `-setup.exe` installer |
-            | macOS (Apple Silicon) | `.dmg` disk image (drag the app to Applications) |
+            | macOS (Apple Silicon) | `_arm64.dmg` disk image |
+            | macOS (Intel) | `_amd64.dmg` disk image |
             | Debian / Ubuntu | `.deb` |
             | Fedora / RHEL | `.rpm` |
             | Linux (any distribution) | portable `.AppImage` |
@@ -303,8 +358,15 @@ jobs:
             chmod +x mikrotik-rif_<version>_amd64.AppImage && ./mikrotik-rif_<version>_amd64.AppImage
             ```
 
-            Replace `amd64` with `arm64` on 64-bit ARM machines. On Windows run the
-            `-setup.exe`; on macOS open the `.dmg` and drag the app into `/Applications`.
+            Replace `amd64` with `arm64` on 64-bit ARM machines. On Windows run
+            the `-setup.exe`; on macOS open the `.dmg` and move the app to
+            `/Applications`.
+
+            The Linux packages and the AppImage are built on Ubuntu 24.04, so
+            they require **glibc 2.39 or newer** (Ubuntu 24.04+, Debian 13+,
+            Fedora 40+, RHEL 10+). Debian 12, Ubuntu 22.04 and RHEL 9 are below
+            that floor: build from source, or use an AppImage built against an
+            older glibc (none of the current releases are).
 
             ## Verify the download
 
@@ -333,18 +395,24 @@ jobs:
 
             - **Windows** — SmartScreen shows "Windows protected your PC": choose
               **More info**, then **Run anyway**.
+
+            This is an independent tool, not affiliated with, endorsed by or
+            sponsored by MikroTik. "MikroTik" and "RouterOS" are trademarks of
+            their respective owner and are used only to describe interoperability.
           files: |
             dist/*
 
-      # Gate 2 (post-publish): assert the Release really carries the names in
-      # SHA256SUMS.txt, plus SHA256SUMS.txt itself (the Publish step uploads
-      # `dist/*`, which includes the manifest). The pre-publish gate cannot see
-      # server-side renames; this one can, and it is what caught the v0.2.0
-      # space-to-dot rewrite. The Release already exists if this fails, so a red
-      # run here means "follow up / fix the names", not "nothing was published".
+      # Gate 2 (post-upload, pre-promote): assert the draft Release really
+      # carries the names in SHA256SUMS.txt, plus SHA256SUMS.txt itself (the
+      # publish step uploads `dist/*`, which includes the manifest). The
+      # pre-publish gate cannot see server-side renames; this one can, and it is
+      # what caught the v0.2.0 space-to-dot rewrite. Only this job's token
+      # (`contents: write`) can read a draft; `gh release view` resolves it by
+      # tag. A red run here leaves the release as a draft, so nothing is public
+      # yet and the updater cannot see it.
       # NOTE: strict equality; a leftover asset from an earlier run of the same
       # tag would also fail this check. ROLLBACK: delete this step.
-      - name: Verify published release assets match SHA256SUMS.txt
+      - name: Verify draft release assets match SHA256SUMS.txt
         if: startsWith(github.ref, 'refs/tags/v')
         working-directory: dist
         env:
@@ -354,16 +422,33 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           # The installers the manifest describes...
           expected="$(sed 's/^[0-9a-f]\{64\}  //' SHA256SUMS.txt | sort)"
-          # ...versus the published assets, ignoring the manifest and its
+          # ...versus the draft's assets, ignoring the manifest and its
           # optional signature (both are metadata, not installers).
           actual="$(gh release view "${tag}" --json assets --jq '.assets[].name' \
             | grep -v -E '^SHA256SUMS\.txt(\.minisig)?$' | sort)"
           if [ "${expected}" != "${actual}" ]; then
-            echo "ERROR: published assets for '${tag}' differ from SHA256SUMS.txt" >&2
+            echo "ERROR: draft assets for '${tag}' differ from SHA256SUMS.txt" >&2
             diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") >&2 || true
             exit 1
           fi
-          echo "OK: published assets for '${tag}' match SHA256SUMS.txt."
+          echo "OK: draft assets for '${tag}' match SHA256SUMS.txt."
+
+      # Gate 2c (promote): only now does the draft become public. `--latest`
+      # marks it as the repository's latest release, which a draft cannot be;
+      # `releases/latest` — what the updater reads — starts answering with this
+      # tag only after this step succeeds. Dry-run dispatches never get here
+      # (the publish step above is tag-only too).
+      # ROLLBACK: a promoted release is public; tags stay immutable, so fix
+      # forward with a new patch tag rather than deleting or re-pushing this one.
+      - name: Promote draft release
+        if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release edit "${tag}" --draft=false --latest
+          echo "OK: release '${tag}' is published and marked latest."
 
       # Observability: release-page summary with the toolchain, the exact tag
       # commit and the published hashes, so the run page is self-describing.

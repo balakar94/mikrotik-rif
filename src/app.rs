@@ -14,7 +14,7 @@ mod settings;
 mod update_ui;
 mod workspace;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -23,7 +23,9 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, ThemePreference};
 use fluent_bundle::FluentArgs;
 
 use crate::i18n::I18n;
-use crate::parser::{Capture, CaptureLimits, LineIndex, Part, PartText, filter_parts, next_match};
+use crate::parser::{
+    Capture, CaptureLimits, LineIndex, Part, PartText, line_of_offset, next_match,
+};
 use crate::update;
 
 use crate::splash::{self, ScanView};
@@ -147,8 +149,9 @@ struct GlobalSearch {
     pending: VecDeque<usize>,
     /// Module index whose expansion the search is waiting on.
     in_flight: Option<usize>,
-    /// Module indices whose expanded text contains the query.
-    hits: HashSet<usize>,
+    /// Modules whose expanded text contains the query, with the zero-based
+    /// line of the first match so selecting a hit can jump straight to it.
+    hits: HashMap<usize, usize>,
     /// Modules scanned so far.
     scanned: usize,
     /// Readable modules to scan in total.
@@ -164,7 +167,7 @@ impl GlobalSearch {
             needle: String::new(),
             pending: VecDeque::new(),
             in_flight: None,
-            hits: HashSet::new(),
+            hits: HashMap::new(),
             scanned: 0,
             total: 0,
             done: true,
@@ -237,9 +240,6 @@ pub struct Viewer {
     // Capture.
     capture: Option<Arc<Capture>>,
     source: Option<PathBuf>,
-    /// Owned labels of [`Self::capture`], cached at index time so the module
-    /// filter can match without rebuilding a `Vec<String>` on every keystroke.
-    labels: Vec<String>,
     filter: String,
     visible: Vec<usize>,
     selected: Option<usize>,
@@ -249,10 +249,17 @@ pub struct Viewer {
     views: HashMap<usize, Arc<BodyView>>,
     /// Insertion order of [`Self::views`] keys, for bounded eviction.
     view_order: VecDeque<usize>,
+    /// Last vertical scroll offset of each module, so returning to a module
+    /// restores the reader's place instead of jumping back to line one.
+    view_offsets: HashMap<usize, f32>,
     find: String,
     matches: Vec<usize>,
     match_cursor: usize,
     scroll_to_line: Option<usize>,
+    /// Row to restore when the next `BodyView` is shown. A global-search hit
+    /// sets it to the first matching line; a normal selection leaves it empty
+    /// and the reading surface starts at row zero.
+    pending_scroll: Option<usize>,
     pending_expand: Option<usize>,
     /// Monotonic sequence for expansion requests; lets the worker drop stale
     /// arrivals when the user moves quickly between modules.
@@ -308,17 +315,18 @@ impl Viewer {
             home_error: None,
             capture: None,
             source: None,
-            labels: Vec::new(),
             filter: String::new(),
             visible: Vec::new(),
             selected: None,
             body: None,
             views: HashMap::new(),
             view_order: VecDeque::new(),
+            view_offsets: HashMap::new(),
             find: String::new(),
             matches: Vec::new(),
             match_cursor: 0,
             scroll_to_line: None,
+            pending_scroll: None,
             pending_expand: None,
             expand_seq: 0,
             busy: None,
@@ -400,14 +408,18 @@ impl Viewer {
         self.fade_at = Some(self.last_time);
         self.home_error = None;
         self.capture = None;
-        self.labels.clear();
+        // The filter belongs to the previous capture. Carrying it over would
+        // open the new file filtered, which looks like a missing capture.
+        self.filter.clear();
         self.body = None;
         self.views.clear();
         self.view_order.clear();
+        self.view_offsets.clear();
         self.matches.clear();
         self.visible.clear();
         self.selected = None;
         self.pending_expand = None;
+        self.pending_scroll = None;
         self.busy = None;
         self.notice = None;
         self.notes = NotesState::Collapsed;
@@ -438,6 +450,21 @@ impl Viewer {
 
     /// Select a module and show it, expanding only on a cache miss.
     fn select(&mut self, index: usize) {
+        // A global-search hit knows the first matching line. Jump there and
+        // reuse the query as the in-module highlight, so the user does not have
+        // to search the same text twice.
+        let hit = self
+            .search
+            .as_ref()
+            .and_then(|search| search.hits.get(&index).copied());
+        if let Some(line) = hit {
+            if let Some(search) = &self.search {
+                self.find = search.needle.clone();
+            }
+            self.pending_scroll = Some(line);
+        } else {
+            self.pending_scroll = None;
+        }
         self.selected = Some(index);
         if let Some(view) = self.cached_view(index) {
             self.pending_expand = None;
@@ -461,7 +488,10 @@ impl Viewer {
     /// Show a cached view without touching the worker.
     fn show_view(&mut self, view: Arc<BodyView>) {
         self.body = Some(view);
-        self.scroll_to_line = Some(0);
+        // A global-search hit carries an explicit row; a normal selection
+        // leaves this empty so the reading surface can restore the module's
+        // saved scroll offset.
+        self.scroll_to_line = self.pending_scroll.take();
         self.recompute_matches();
     }
 
@@ -489,11 +519,6 @@ impl Viewer {
                 }
                 Event::Indexed { path, capture, .. } => {
                     let modules = units(capture.len());
-                    self.labels = capture
-                        .parts()
-                        .iter()
-                        .map(|part| part.label().to_owned())
-                        .collect();
                     self.capture = Some(capture);
                     self.source = Some(path);
                     self.scan_min_until = Some(
@@ -503,6 +528,7 @@ impl Viewer {
                     // A new index invalidates every cached view.
                     self.views.clear();
                     self.view_order.clear();
+                    self.view_offsets.clear();
                     self.notes = NotesState::Collapsed;
                     let message = self.i18n.count("status-indexed", modules);
                     self.set_notice(message, false);
@@ -511,7 +537,6 @@ impl Viewer {
                     self.stage = Stage::Home;
                     self.fade_at = Some(self.last_time);
                     self.capture = None;
-                    self.labels.clear();
                     self.set_notice(String::new(), false);
                     let message = self.message_with_path("error-open", &path, &reason);
                     self.home_error = Some(message);
@@ -547,8 +572,9 @@ impl Viewer {
     fn on_expanded<T: Into<Arc<PartText>>>(&mut self, index: usize, text: T) {
         let text = text.into();
         if self.search.as_ref().and_then(|search| search.in_flight) == Some(index) {
-            let hit = self.search.as_ref().is_some_and(|search| {
-                find_case_insensitive(&text.text, &search.needle, 0).is_some()
+            let hit_line = self.search.as_ref().and_then(|search| {
+                find_case_insensitive(&text.text, &search.needle, 0)
+                    .map(|offset| line_of_offset(&text.text, offset))
             });
             // Cache the expanded text so opening a hit is an `Arc` clone
             // instead of a second expansion behind a spinner.
@@ -557,8 +583,8 @@ impl Viewer {
             if let Some(search) = self.search.as_mut() {
                 search.in_flight = None;
                 search.scanned += 1;
-                if hit {
-                    search.hits.insert(index);
+                if let Some(line) = hit_line {
+                    search.hits.insert(index, line);
                 }
             }
             self.advance_search();
@@ -663,7 +689,7 @@ impl Viewer {
             needle,
             pending,
             in_flight: None,
-            hits: HashSet::new(),
+            hits: HashMap::new(),
             scanned: 0,
             total,
             done: total == 0,
@@ -692,6 +718,7 @@ impl Viewer {
             if search.in_flight.is_some() {
                 return;
             }
+            let needle = search.needle.clone();
             loop {
                 let Some(index) = search.pending.pop_front() else {
                     search.done = true;
@@ -701,8 +728,10 @@ impl Viewer {
                 // expansion: count it as scanned and test the cached text.
                 if let Some(view) = self.views.get(&index) {
                     search.scanned += 1;
-                    if find_case_insensitive(&view.text.text, &search.needle, 0).is_some() {
-                        search.hits.insert(index);
+                    if let Some(offset) = find_case_insensitive(&view.text.text, &needle, 0) {
+                        search
+                            .hits
+                            .insert(index, line_of_offset(&view.text.text, offset));
                     }
                     continue;
                 }
@@ -767,14 +796,10 @@ impl Viewer {
     }
 
     fn refresh_visible(&mut self) {
-        if self.capture.is_none() {
-            self.visible.clear();
-            return;
-        }
-        // `self.labels` mirrors the capture's parts one-to-one (built at index
-        // time), so the tested filter kernel drives the rail without rebuilding
-        // a `Vec<String>` of labels on every keystroke.
-        self.visible = filter_parts(&self.labels, &self.filter);
+        self.visible = match &self.capture {
+            Some(capture) => capture.filter_indices(&self.filter),
+            None => Vec::new(),
+        };
     }
 
     /// Move from the animation to the workspace once indexing is done.

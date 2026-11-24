@@ -46,15 +46,21 @@ traffic other than the opt-out update check described below.
   container itself are surfaced in a dismissible notes banner rather than
   swallowed.
 - **Everything stays on the machine.** The parser is UI-agnostic and touches no
-  files; the app writes nothing to disk unless you ask it to export a module.
-  The last-resort panic log never follows symlinks.
+  files: capture content is read from the path you open, never uploaded, and the
+  CLI writes only where you ask it to. The app itself keeps a little local state
+  (preferences, window geometry and the last update check), may append a panic
+  log in the system temporary directory, and saves installers to disk when you
+  accept an update ([`PRIVACY.md`](PRIVACY.md)). The panic log is private to the
+  user and never writes through a pre-existing symlink (the mid-open swap is
+  re-checked by device and inode on Unix only).
 - **Follows your system, remembers your choice.** Light/dark theme and
   interface language are detected from the OS and can be changed at any time in
   the Settings screen, where the choice is remembered across runs.
 - **Updates on your terms.** On every launch, while it is enabled, the app asks
   the GitHub releases API whether a newer version exists (opt out in Settings).
   Settings shows the running version and a short build hash, offers the
-  download, verifies the installer against the release's `SHA256SUMS.txt`, and
+  matching download (or opens the release page when no asset matches the
+  platform), verifies the installer against the release's `SHA256SUMS.txt`, and
   always leaves the final install step to you — macOS only downloads the `.dmg`.
   **Skip this version** keeps the automatic check quiet until you run a manual
   check from Settings.
@@ -68,7 +74,7 @@ Intel/AMD) or `arm64`:
 | OS | Architectures | Package | First launch |
 | --- | --- | --- | --- |
 | **Windows** | `amd64`, `arm64` | `-setup.exe` installer (NSIS) | Unsigned: SmartScreen may warn — **More info → Run anyway**. |
-| **macOS** | Apple Silicon (`arm64`) only | `.dmg` | Unsigned: Gatekeeper blocks it — right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
+| **macOS** | Apple Silicon (`arm64`), Intel (`amd64`) | `.dmg` (`_arm64` / `_amd64`) | Unsigned: Gatekeeper blocks it — right-click the app → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/MikroTik RIF Viewer.app"`. |
 | **Debian / Ubuntu** | `amd64`, `arm64` | `.deb` | Installs a menu entry, an icon and the `.rif` file-type association. |
 | **Fedora / RHEL** | `amd64`, `arm64` | `.rpm` | Same as `.deb`. |
 | **Any Linux** | `amd64`, `arm64` | portable `.AppImage` | `chmod +x` and run it; no installation. |
@@ -89,13 +95,20 @@ sudo dnf install ./mikrotik-rif_<version>_amd64.rpm
 chmod +x mikrotik-rif_<version>_amd64.AppImage && ./mikrotik-rif_<version>_amd64.AppImage
 ```
 
-Swap `amd64` for `arm64` on 64-bit ARM machines. Intel Macs are not shipped:
-build from source there. Every download is listed in `SHA256SUMS.txt`, so you
-can check it with `sha256sum -c SHA256SUMS.txt`.
+Swap `amd64` for `arm64` on 64-bit ARM machines; Intel Macs get the `amd64`
+`.dmg`. Every download is listed in `SHA256SUMS.txt`, so you can check it with
+`sha256sum -c SHA256SUMS.txt`.
 
-These builds are intentionally unsigned. Code signing and notarization need paid
-Apple and Windows certificates; they can be added later through CI secrets
-without changing the pipeline.
+The Linux artifacts are built on Ubuntu 24.04, so they require **glibc 2.39 or
+newer** — Ubuntu 24.04+, Debian 13+, Fedora 40+ and RHEL 10+ work. Debian 12,
+Ubuntu 22.04 and RHEL 9 are below that floor: build from source, or use an
+AppImage built against an older glibc (none of the current releases are).
+
+These builds are intentionally unsigned. Removing the first-launch warnings
+needs paid Apple and Windows certificates. On macOS it also needs notarization
+through Apple's notary service plus a hardened-runtime and entitlements review,
+which CI secrets alone cannot provide; both remain [`ROADMAP.md`](ROADMAP.md)
+items.
 
 ## Using the app
 
@@ -157,20 +170,35 @@ opening a window.
 
 ```sh
 mikrotik-rif --help                          # usage
+mikrotik-rif --version                       # version and exit (also -V)
 mikrotik-rif --list supout.rif               # ordinal, label, compressed bytes, status
-mikrotik-rif --extract supout.rif --module "ip/firewall" --stdout
+mikrotik-rif --list --json supout.rif        # { "schema": 1, "parts": [...] } for scripts
+mikrotik-rif --extract supout.rif --module firewall --stdout
 mikrotik-rif --extract supout.rif --all --out parts/
 ```
 
 `--extract` selects either the first part whose label matches `--module` exactly
-or, with `--all`, every readable part. Output goes to `<dir>/<sanitised-label>.txt`
-with `--out`, to standard output with `--stdout`, or by default to a
-`<capture-stem>.parts/` directory beside the capture. `--all` disambiguates
-colliding labels with a numeric suffix instead of overwriting. A leading `--`
-treats the next argument as a path even if it starts with `-`. Exit codes are
-`0` for success, `1` for an operational failure (missing file, unreadable
-module) and `2` for a malformed command line. Captures larger than 512 MiB are
-rejected up-front with `file too large (>512 MiB)`.
+or, with `--all`, every readable part. Module labels are the short section names
+used inside a capture (`firewall`, `export`, `interface`, …), not RouterOS menu
+paths; run `--list` to see the exact labels in a given file. Output goes to
+`<dir>/<sanitised-label>.txt` with `--out`, to standard output with `--stdout`,
+or by default to a `<capture-stem>.parts/` directory beside the capture. `--all`
+disambiguates colliding labels with a numeric suffix instead of overwriting. A
+leading `--` treats the next argument as a path even if it starts with `-`. Exit
+codes are `0` for success, `1` for an operational failure (missing file,
+unreadable module) and `2` for a malformed command line. Captures larger than
+512 MiB are rejected up-front with `file too large (>512 MiB)`.
+
+A capture body is untrusted input. When `--stdout` writes to a live terminal,
+control characters other than tab, CR and LF are replaced with `?`, so a
+hostile module cannot emit ANSI/OSC sequences (clipboard writes, fake prompts,
+screen clears). Redirecting or piping keeps the bytes exact; pass `--force-raw`
+to keep them exact on a terminal too.
+
+On Windows, release builds are GUI-subsystem executables (so double-clicking
+does not open a console window). If a console does not attach their standard
+output, redirect it to a file (`mikrotik-rif --list supout.rif > listing.txt`)
+or use a development build.
 
 ## Settings
 
@@ -197,10 +225,10 @@ The gear in the top bar (and on the welcome and home screens), or
 
 ## Requirements
 
-- Rust 1.95 or newer (edition 2024) to build.
+- Rust 1.100.0 or newer (edition 2024) to build.
 - A Vulkan/Metal/DX12-capable GPU for the default eframe `wgpu` renderer.
 - No runtime dependencies beyond the bundled fonts. On Linux, a desktop with
-  X11 or Wayland.
+  X11 or Wayland plus glibc 2.39 or newer (see [Install](#install)).
 
 ## Build from source
 
@@ -216,6 +244,7 @@ Quality gates, the same ones CI runs:
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test --doc
 ```
 
 Beyond the gates, the parser has a `cargo-fuzz` harness and a Criterion bench
@@ -251,6 +280,7 @@ budgets:
 | Limit | Default |
 | --- | --- |
 | Parts per capture | 100 000 |
+| Part label | 4 KiB |
 | Raw part body | 128 MiB |
 | Decompressed part | 256 MiB |
 | Transcoded payloads (all parts) | 512 MiB |
@@ -280,6 +310,8 @@ MIKROTIK_RIF_LANG=de cargo run -- supout.rif
 Cargo.toml
 app.rc               Windows icon resource compiled into the .exe
 LICENSE
+PRIVACY.md           what stays local and the single network request
+SECURITY.md          vulnerability reporting and threat model
 THIRD-PARTY-NOTICES.md  dependency licence texts, shipped inside every package
 about.toml           cargo-about policy for the third-party notices
 about.hbs            template used to render THIRD-PARTY-NOTICES.md
@@ -339,6 +371,14 @@ and the Linux packages install all three under
 
 Because the fonts are embedded, the release binary is around 19 MB, most of it
 the CJK font.
+
+## Privacy and security
+
+[`PRIVACY.md`](PRIVACY.md) lists exactly what is stored locally and describes
+the single network request the app makes. To report a vulnerability, use
+GitHub's private Security Advisories as described in
+[`SECURITY.md`](SECURITY.md); please do not open a public issue for a security
+problem.
 
 ## Roadmap
 

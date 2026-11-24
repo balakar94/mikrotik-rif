@@ -71,6 +71,8 @@ button-find = Meklēt šajā modulī
 
 ## Kļūdas un moduļa stāvoklis
 module-unreadable = Šo moduli nevarēja indeksēt.
+module-empty = Šis modulis ir tukšs.
+label-internal = iekšējs
 error-open = Nevarēja atvērt { $path }: { $reason }
 error-open-unreadable = Failu nevar nolasīt: { $detail }
 error-open-dir = Ir direktorija, nevis fails
@@ -90,6 +92,7 @@ update-now = Atjaunināt tagad
 update-later = Vēlāk
 update-skip = Izlaist šo versiju
 update-auto = Automātiski meklēt atjauninājumus
+update-privacy = Viena pārbaude katrā palaišanā: lietotnes nosaukums un versija tiek nosūtīta uz api.github.com. Nekādu uztveršanas datu, nekādu identifikatoru.
 
 ## Iestatījumi
 button-settings = Iestatījumi

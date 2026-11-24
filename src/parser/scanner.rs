@@ -53,6 +53,15 @@ pub struct PartSpan {
     pub end: usize,
 }
 
+/// Result of one container scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanReport {
+    /// Every part body, in file order.
+    pub spans: Vec<PartSpan>,
+    /// Total oddities seen, including those dropped after [`MAX_NOTES`].
+    pub notes_total: usize,
+}
+
 /// A structural oddity that did not abort the read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -150,6 +159,26 @@ pub fn locate_parts_cancellable(
     notes: &mut Vec<ContainerNote>,
     cancel: &Cancel,
 ) -> Result<Vec<PartSpan>, RifError> {
+    Ok(scan_cancellable(source, limits, notes, cancel)?.spans)
+}
+
+/// Walk the container and report every part body plus the total oddity count.
+///
+/// This is [`locate_parts_cancellable`] with the count that the capped
+/// [`ContainerNote`] list cannot carry: the scanner keeps at most [`MAX_NOTES`]
+/// entries, but a hostile or badly damaged file can produce far more. The
+/// caller (the viewer) surfaces the real count instead of reporting the cap as
+/// if it were the total.
+///
+/// # Errors
+///
+/// Everything [`locate_parts`] reports, plus [`RifError::Cancelled`].
+pub fn scan_cancellable(
+    source: &[u8],
+    limits: &CaptureLimits,
+    notes: &mut Vec<ContainerNote>,
+    cancel: &Cancel,
+) -> Result<ScanReport, RifError> {
     let mut spans = Vec::new();
     let mut cursor = 0usize;
     let mut open: Option<usize> = None;
@@ -249,7 +278,10 @@ pub fn locate_parts_cancellable(
         notes_seen >= notes.len().saturating_sub(notes_at_start),
         "every note stored by this scan was counted when seen"
     );
-    Ok(spans)
+    Ok(ScanReport {
+        spans,
+        notes_total: notes_seen,
+    })
 }
 
 #[cfg(test)]
@@ -379,6 +411,29 @@ mod tests {
             notes
                 .iter()
                 .all(|note| matches!(note, ContainerNote::StrayClose { .. }))
+        );
+    }
+
+    #[test]
+    fn scan_report_counts_notes_beyond_the_cap() {
+        let mut source = Vec::new();
+        for _ in 0..1500 {
+            source.extend_from_slice(CLOSE_MARKER);
+            source.push(b'\n');
+        }
+        let mut notes = Vec::new();
+        let report = scan_cancellable(
+            &source,
+            &CaptureLimits::default(),
+            &mut notes,
+            &Cancel::default(),
+        )
+        .expect("stray closes must not abort");
+        assert_eq!(report.spans.len(), 0, "stray closes produce no spans");
+        assert_eq!(notes.len(), MAX_NOTES, "retained notes are capped");
+        assert_eq!(
+            report.notes_total, 1500,
+            "the report must carry the real total"
         );
     }
 
